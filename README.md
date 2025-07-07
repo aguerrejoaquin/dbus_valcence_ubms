@@ -42,8 +42,8 @@ Install git
 
 Clone library
 ```
- git clone https://github.com/aguerrejoaquin/dbus_valence_ubms.git
- cd dbus_valence_ubms/ext
+ git clone https://github.com/aguerrejoaquin/dbus_ubms.git
+ cd dbus_ubms/ext
  git clone https://github.com/victronenergy/velib_python.git
 ```
 
@@ -56,7 +56,7 @@ Clone library
 ## Preparation on Victron
 ```
  cd
- dbus_valence_ubms/prep_ubms.sh
+ dbus_ubms/prep_ubms.sh
 ```
 
 ## Run from command line (recommended to test this before next steps)
@@ -67,9 +67,9 @@ Check with the "ifconfig" for the CAN number port (ex: can0). You will need to k
 ```
  cd dbus_ubms
 
- python dbus_ubms.py -i can0 -v 58.0 -c 552
+ python dbus_ubms.py -i can0 -v 56.0 -c 288
  or
- nohup python dbus_ubms.py -i can0 -v 58 -c 552 &
+ nohup python dbus_ubms.py -i can0 -v 29.0 -c 650 &
 ```
 
 ## Run as a service: 
@@ -78,7 +78,7 @@ NOTE: IF you have your can connection in another port number, you need to change
 Add service files to the service folder and edit your run file with you port, volt, and capacity values
 ```
 cd
-ln -s /home/root/dbus_valence_ubms/service /service/dbus-ubms.can0
+ln -s /home/root/dbus_ubms/service /service/dbus-ubms.can0
 cd /service/dbus-ubms.can0
 nano run
 ```
@@ -88,7 +88,7 @@ Edit, save, and exit
 Add rc.local file into /data folder. This rc.local file is called after each boot and run all that its inside. Be aware if you already have this file, it will be overwrite. In this case I suggest to edit and add the lines that are in the file to yours.
 after that, you can just reboot or call svc command to run the service.
 ```
- cp /dbus_valence_ubms/rc.local /data/rc.local
+ cp /dbus_ubms/rc.local /data/rc.local
  svc -u /service/dbus-ubms.can0
 ```
 NOTE: IF you have your can connection in another port number, you need to change can0 in the rc.local file.
