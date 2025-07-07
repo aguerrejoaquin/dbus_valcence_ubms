@@ -43,7 +43,7 @@ Install git
 Clone library
 ```
  git clone https://github.com/aguerrejoaquin/dbus_valence_ubms.git
- cd dbus_ubms/ext
+ cd dbus_valence_ubms/ext
  git clone https://github.com/victronenergy/velib_python.git
 ```
 
