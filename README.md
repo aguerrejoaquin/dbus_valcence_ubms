@@ -3,16 +3,19 @@
  The idea here is to use a CAN-USB converter connected to the USB port of a Raspberry running VenusOS or Victron device directly.
 
  Note: I have personally used this on a Victron Cervo GX with a USB-Converter connected to a USB port.
- <img width="342" alt="image" src="https://github.com/aguerrejoaquin/dbus_ubms/assets/132913905/3ff1d289-ec77-4b8e-8e78-0eb32ecf9fd4">
+ ![image](https://github.com/user-attachments/assets/fa433fa7-630d-4237-817a-b10d3de3babf)
+
 
 ## Preparation in VenusOS
 1) Go to settings --> Services 
 2) Plug-in the USB-CAN converter to the device and check what service appears. (in my case is under VE.CAN port)
-<img width="484" alt="image" src="https://github.com/aguerrejoaquin/dbus_ubms/assets/132913905/de253755-bb9e-47c7-9806-611ae5da5dc5">
+![image](https://github.com/user-attachments/assets/df4bfa9a-f93c-4e85-bd4d-beb1ce399b87)
+
 
 3) Get into VE.CAN port to configure as below
 --> VE.CAN port --> CAN bus profile --> "and select CAN-BUS BMS (500kbit/s)"
- <img width="484" alt="image" src="https://github.com/aguerrejoaquin/dbus_ubms/assets/132913905/0b19cd64-0dac-4470-b194-789076d40edf">
+![image](https://github.com/user-attachments/assets/6f1d8d3e-ae78-4b33-931a-c62dd7c0e2f0)
+
 
  ## Use this code at your own risk.
  
