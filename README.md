@@ -53,7 +53,7 @@ Clone library
  sudo pip install dbus-python can pygobject
 ```
 
-## Preparation on Victron
+## Preparation on Victron (may not be needed if previously installed Python)
 ```
  cd
  dbus_valence_ubms/prep_ubms.sh
