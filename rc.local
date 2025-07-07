@@ -6,6 +6,6 @@ ifconfig slcan0 up
 # ip link set can0 up type can bitrate 250000
 #ip link set can8 up type can bitrate 250000
 #svc -u /service/dbus-ubms.can8
-ln -s /home/root/dbus_ubms/service /service/dbus-ubms.can0
+ln -s /home/root/dbus_valence_ubms/service /service/dbus-ubms.can0
 svc -u /service/dbus-ubms.can0
 svc -d /service/can-bus-bms.can0
