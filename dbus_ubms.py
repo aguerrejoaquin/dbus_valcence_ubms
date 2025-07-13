@@ -87,7 +87,7 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Info/MaxChargeCurrent", 0)
         self._dbusservice.add_path("/Info/MaxDischargeCurrent", 0)
         self._dbusservice.add_path("/Info/MaxChargeVoltage", float(voltage))
-        self._dbusservice.add_path("/Info/BatteryLowVoltage", 40.8)
+        self._dbusservice.add_path("/Info/BatteryLowVoltage", 44.8)
         self._dbusservice.add_path("/Alarms/CellImbalance", 0)
         self._dbusservice.add_path("/Alarms/LowVoltage", 0)
         self._dbusservice.add_path("/Alarms/HighVoltage", 0)
