@@ -137,7 +137,7 @@ class UbmsBattery(can.Listener):
             elif msg.arbitration_id == 0xC1 and found & 1 == 0:
                 # check pack voltage
                 if (
-                    abs(2 * msg.data[0] - self.maxChargeVoltage)
+                    abs(self.modulesInSeries * msg.data[0] - self.maxChargeVoltage)
                     > 0.15 * self.maxChargeVoltage
                 ):
                     logging.error(
