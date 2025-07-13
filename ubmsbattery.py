@@ -356,7 +356,7 @@ def main():
 
     #       logger = can.Logger('logfile.asc')
 
-    bat = UbmsBattery(capacity=650, voltage=29.0, connection="can0")
+    bat = UbmsBattery(capacity=552, voltage=58.0, connection="can0")
 
     listeners = [
         #               logger,          # Regular Listener object
