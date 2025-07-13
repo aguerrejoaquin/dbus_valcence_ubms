@@ -32,8 +32,8 @@ class UbmsBattery(can.Listener):
     def __init__(self, voltage, capacity, connection):
         self.capacity = capacity
         self.maxChargeVoltage = voltage
-        self.numberOfModules = 16
-        self.numberOfStrings = 4
+        self.numberOfModules = 8
+        self.numberOfStrings = 2
         self.modulesInSeries = int(self.numberOfModules / self.numberOfStrings)
         self.cellsPerModule = 4
         self.chargeComplete = 0
@@ -137,7 +137,7 @@ class UbmsBattery(can.Listener):
             elif msg.arbitration_id == 0xC1 and found & 1 == 0:
                 # check pack voltage
                 if (
-                    abs(self.modulesInSeries * msg.data[0] - self.maxChargeVoltage)
+                    abs(2 * msg.data[0] - self.maxChargeVoltage)
                     > 0.15 * self.maxChargeVoltage
                 ):
                     logging.error(
@@ -356,7 +356,7 @@ def main():
 
     #       logger = can.Logger('logfile.asc')
 
-    bat = UbmsBattery(capacity=552, voltage=58.0, connection="can0")
+    bat = UbmsBattery(capacity=650, voltage=29.0, connection="can0")
 
     listeners = [
         #               logger,          # Regular Listener object
