@@ -405,7 +405,7 @@ class DbusBatteryService:
                 self._dbusservice["/Balances/Cell%s" % (str(i + 1))] = voltage
                 if voltage and i < self._bat.cellsPerModule * self._bat.modulesInSeries:
                     voltageSum += voltage
-            self._dbusservice["/Voltages/Sum"] = voltageSum
+            self._dbusservice["/Voltages/Sum"] = voltageSum = 50
             self._dbusservice["/Voltages/Diff"] = (
                 self._bat.maxCellVoltage - self._bat.minCellVoltage
             )
