@@ -305,7 +305,7 @@ class UbmsBattery(can.Listener):
             if module == self.numberOfModules - 1:
                 self.voltage = (
                     #sum(self.moduleVoltage[0 : self.modulesInSeries]) / 1000.0
-                    sum(self.moduleVoltage[0,1,2,3]) / 1000.0
+                    sum(self.moduleVoltage[0 : self.modulesInSeries]) / 10.0
                 )
 
         elif msg.arbitration_id in [0x46A, 0x46B, 0x46C, 0x46D]:
