@@ -40,7 +40,7 @@ class UbmsBattery(can.Listener):
         self.soc = 0
         self.mode = 0
         self.state = ""
-        self.voltage = 0
+        self.voltage = 10
         self.current = 0
         self.temperature = 0
         self.balanced = True
