@@ -40,7 +40,7 @@ class UbmsBattery(can.Listener):
         self.soc = 0
         self.mode = 0
         self.state = ""
-        self.voltage = 10
+        self.voltage = 13
         self.current = 0
         self.temperature = 0
         self.balanced = True
@@ -137,9 +137,7 @@ class UbmsBattery(can.Listener):
             elif msg.arbitration_id == 0xC1 and found & 1 == 0:
                 # check pack voltage
                 if (
-                    #abs(2 * msg.data[0] - self.maxChargeVoltage)
-                    abs(self.modulesInSeries * msg.data[0] - self.maxChargeVoltage)
-                    
+                    abs(2 * msg.data[0] - self.maxChargeVoltage)
                     > 0.15 * self.maxChargeVoltage
                 ):
                     logging.error(
@@ -306,7 +304,7 @@ class UbmsBattery(can.Listener):
             # update pack voltage at each arrival of the last modules cell voltages
             if module == self.numberOfModules - 1:
                 self.voltage = (
-                    sum(self.moduleVoltage[0 : self.modulesInSeries]) / 1000.0                    
+                    sum(self.moduleVoltage[0 : self.modulesInSeries]) / 1000.0
                 )
 
         elif msg.arbitration_id in [0x46A, 0x46B, 0x46C, 0x46D]:
