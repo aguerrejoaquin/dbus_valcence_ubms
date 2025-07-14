@@ -111,11 +111,35 @@ class UbmsBattery(can.Listener):
                 if (iStart + idx) < len(self.moduleSoc):
                     self.moduleSoc[iStart + idx] = (m * 100) >> 8
 
-        # --- Debug: Print cell & module voltages after every CAN message ---
+        # --- Debug: Print all available BMS data after every CAN message ---
         print("----- Battery State Debug -----")
+        print(f"State: {self.state} (mode={self.mode})")
+        print(f"Pack SOC: {self.soc}%")
+        print(f"Current: {self.current} A")
+        print(f"Max Charge Voltage: {self.maxChargeVoltage} V")
+        print(f"Max Charge Current: {self.maxChargeCurrent} A")
+        print(f"Max Discharge Current: {self.maxDischargeCurrent} A")
+        print(f"Number of modules: {self.numberOfModules}")
+        print(f"Number of strings: {self.numberOfStrings}")
+        print(f"Number of modules in series: {self.modulesInSeries}")
+        print(f"Number of modules communicating: {self.numberOfModulesCommunicating}")
+        print(f"Number of modules balancing: {self.numberOfModulesBalancing}")
+        print(f"Shutdown reason: {self.shutdownReason}")
+        print(f"Voltage and Cell Temp Alarms: {self.voltageAndCellTAlarms}")
+        print(f"Current and PCB Temp Alarms: {self.currentAndPcbTAlarms}")
+        print(f"Internal Errors: {self.internalErrors}")
+        print(f"Balanced: {self.balanced}")
+        print(f"Pack max cell voltage: {self.maxCellVoltage:.3f} V")
+        print(f"Pack min cell voltage: {self.minCellVoltage:.3f} V")
+        print(f"Pack max cell temperature: {self.maxCellTemperature}°C")
+        print(f"Pack min cell temperature: {self.minCellTemperature}°C")
+        print(f"Pack max PCB temperature: {self.maxPcbTemperature}°C")
+        print("Per-module voltages (mV):", [f"{v}" for v in self.moduleVoltage])
+        print("Per-module SOC (%):", [f"{v}" for v in self.moduleSoc])
+        print("Per-module temps (unused):", [f"{v}" for v in self.moduleTemp])
+        print("Cell voltages (V):")
         for idx, cells in enumerate(self.cellVoltages):
-            print(f"Module {idx+1:02}: " + " ".join(f"{v/1000:.3f}V" for v in cells))
-        print("Module voltages:", [f"{v}mV" for v in self.moduleVoltage])
+            print(f"  Module {idx+1:02}: " + " ".join(f"{v/1000:.3f}V" for v in cells))
         try:
             pack_voltage = self.get_pack_voltage()
             print(f"Pack voltage (sum of modules 0-{self.modulesInSeries-1}): {pack_voltage:.3f} V")
@@ -166,6 +190,13 @@ def main():
     logging.info("Max cell temperature: %d°C", bat.maxCellTemperature)
     logging.info("Min cell temperature: %d°C", bat.minCellTemperature)
     logging.info("Max PCB temperature: %d°C", bat.maxPcbTemperature)
+    logging.info("Voltage and Cell Temp Alarms: %d", bat.voltageAndCellTAlarms)
+    logging.info("Current and PCB Temp Alarms: %d", bat.currentAndPcbTAlarms)
+    logging.info("Internal Errors: %d", bat.internalErrors)
+    logging.info("Number of modules communicating: %d", bat.numberOfModulesCommunicating)
+    logging.info("Number of modules balancing: %d", bat.numberOfModulesBalancing)
+    logging.info("Shutdown reason: %d", bat.shutdownReason)
+    logging.info("Balanced: %s", bat.balanced)
     logging.info("Cell voltages and module SOCs:")
     for i in range(bat.numberOfModules):
         logging.info(
