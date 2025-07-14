@@ -4,6 +4,7 @@
 import sys
 import time
 import logging
+
 import dbus
 import dbus.service
 import dbus.mainloop.glib
@@ -195,6 +196,9 @@ def main():
     parser.add_argument("--min_soc", type=int, default=5)
     args = parser.parse_args()
 
+    # --- D-Bus main loop must be set BEFORE any D-Bus object creation ---
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
     logging.basicConfig(level=logging.INFO)
 
     battery = UbmsBattery(
@@ -217,7 +221,6 @@ def main():
         if argval is not None:
             service.thresholds[k] = argval
 
-    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     try:
         GLib.MainLoop().run()
     except KeyboardInterrupt:
