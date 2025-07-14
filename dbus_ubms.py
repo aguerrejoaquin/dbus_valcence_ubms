@@ -14,7 +14,7 @@ from vedbus import VeDbusService
 
 from ubmsbattery import UbmsBattery
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 class DbusBatteryService:
     def __init__(
@@ -29,10 +29,10 @@ class DbusBatteryService:
         )
         self.numberOfModules = numberOfModules
         self.numberOfStrings = numberOfStrings
-        self.cellsPerModule = 4
+        self.cellsPerModule = 4  # Fixed in UbmsBattery
 
         self._dbusservice = VeDbusService(
-            f"{servicename}.socketcan_{connection}_di{deviceinstance}", register=False
+            f"{servicename}.socketcan_{connection}_di{deviceinstance}"
         )
 
         # Management objects
@@ -115,8 +115,11 @@ class DbusBatteryService:
         for mod in range(self.numberOfModules):
             for cell in range(self.cellsPerModule):
                 cell_idx = mod * self.cellsPerModule + cell
-                voltage = self._bat.cellVoltages[mod][cell] * 0.001 if mod < len(self._bat.cellVoltages) and cell < len(self._bat.cellVoltages[mod]) else 0
-                self._dbusservice[f"/System/Cell/{cell_idx+1}/Voltage"] = voltage
+                if mod < len(self._bat.cellVoltages) and cell < len(self._bat.cellVoltages[mod]):
+                    cell_voltage = self._bat.cellVoltages[mod][cell] * 0.001
+                else:
+                    cell_voltage = 0
+                self._dbusservice[f"/System/Cell/{cell_idx+1}/Voltage"] = cell_voltage
                 # As you have no per-cell temp, use module temp or 0 as fallback
                 temp = self._bat.moduleTemp[mod] if mod < len(self._bat.moduleTemp) else 0
                 self._dbusservice[f"/System/Cell/{cell_idx+1}/Temperature"] = temp
