@@ -8,8 +8,9 @@ from gi.repository import GLib
 
 # Make sure the ve lib path is correct for your Venus OS install
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
-from dbus.mainloop.glib import DBusGMainLoop
-from dbusservice import VeDbusService
+from vedbus import VeDbusService  # noqa: E402
+from ve_utils import exit_on_error  # noqa: E402
+from settingsdevice import SettingsDevice  # noqa: E402
 
 class UbmsBattery:
     def __init__(self, interface):
