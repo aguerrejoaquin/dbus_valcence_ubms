@@ -16,7 +16,7 @@ class UbmsBattery(can.Listener):
     guiModeKey = {252: 0, 3: 2}
     opState = {0: 14, 1: 9, 2: 9}
 
-    def __init__(self, voltage, capacity, connection, numberOfModules=8, numberOfStrings=2):
+    def __init__(self, voltage, capacity, connection, numberOfModules=16, numberOfStrings=4):
         self.capacity = capacity
         self.maxChargeVoltage = voltage
         self.numberOfModules = int(numberOfModules)
