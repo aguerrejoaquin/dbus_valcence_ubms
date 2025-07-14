@@ -363,12 +363,14 @@ def main():
 
     logging.basicConfig(format="%(levelname)-8s %(message)s", level=logging.DEBUG)
 
-    parser = argparse.ArgumentParser(description="ubmsbattery.py debug")
-    parser.add_argument("--capacity", type=int, default=650, help="Battery capacity, Ah")
-    parser.add_argument("--voltage", type=float, default=29.0, help="Battery max charge voltage")
-    parser.add_argument("--connection", type=str, default="can0", help="CAN device")
-    parser.add_argument("--modules", type=int, default=8, help="Number of modules")
-    parser.add_argument("--strings", type=int, default=2, help="Number of parallel strings")
+    parser = ArgumentParser(description="dbus_ubms", add_help=True)
+parser.add_argument("-i", "--interface", help="CAN interface")
+parser.add_argument("-c", "--capacity", help="capacity in Ah", type=int)
+parser.add_argument("-v", "--voltage", help="maximum charge voltage V", type=float)
+parser.add_argument("--modules", help="number of modules", type=int, default=8)
+parser.add_argument("--strings", help="number of parallel strings", type=int, default=2)
+parser.add_argument("-d", "--debug", help="enable debug logging", action="store_true")
+parser.add_argument("-p", "--print", help="print only")
 
     args = parser.parse_args()
 
