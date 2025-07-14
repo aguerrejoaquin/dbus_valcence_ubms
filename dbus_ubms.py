@@ -92,10 +92,8 @@ class UbmsBattery(can.Listener):
         self.on_message_received(msg)
 
     def on_message_received(self, msg):
-        # Debug: Print every CAN frame
         logging.debug("CAN frame: 0x%X Data: %s", msg.arbitration_id, msg.data.hex())
 
-        # Main BMS status
         if msg.arbitration_id == 0xC0:
             self.soc = msg.data[0]
             logging.debug("SOC updated: %d", self.soc)
@@ -107,10 +105,7 @@ class UbmsBattery(can.Listener):
             except Exception as e:
                 logging.warning("Failed to extract current: %s", str(e))
 
-        # --- Revised: Cell and Module Voltage Parsing ---
-        # For each module, voltages are split between two messages:
-        # Even (0x350, 0x352, ...): 3 cell voltages (2-7)
-        # Odd  (0x351, 0x353, ...): 1 cell voltage (2-3)
+        # Module voltages: even/odd scheme, all 4 cells per module
         if 0x350 <= msg.arbitration_id <= 0x36F:
             module = (msg.arbitration_id - 0x350) >> 1
             if 0 <= module < self.numberOfModules:
@@ -134,7 +129,6 @@ class UbmsBattery(can.Listener):
                         )
                     except Exception as e:
                         logging.warning("Could not unpack 4th cell voltage for module %d: %s", module, str(e))
-        # --- End voltage parsing ---
 
         # Module SOC: 0x6A, 0x6B, 0x6C (for up to 16 modules)
         if msg.arbitration_id in range(0x6A, 0x6A + ((self.numberOfModules + 6) // 7)):
@@ -150,11 +144,11 @@ class UbmsBattery(can.Listener):
             except Exception as e:
                 logging.warning("Error unpacking module SOC: %s", str(e))
 
-        # Module temperatures: (example IDs, adjust as needed)
-        if 0x76A <= msg.arbitration_id <= 0x76D:
+        # Module temperatures: now supports up to 16 modules (0x76A-0x76F)
+        if 0x76A <= msg.arbitration_id <= 0x76F:
             iStart = (msg.arbitration_id - 0x76A) * 3
             try:
-                if (iStart) < len(self.moduleTemp):
+                if (iStart) < len(self.moduleTemp) and msg.dlc > 3:
                     self.moduleTemp[iStart] = ((msg.data[2] * 256) + msg.data[3]) * 0.01
                 if msg.dlc > 5 and (iStart + 1) < len(self.moduleTemp):
                     self.moduleTemp[iStart + 1] = ((msg.data[4] * 256) + msg.data[5]) * 0.01
