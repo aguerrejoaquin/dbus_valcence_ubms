@@ -7,7 +7,7 @@ import struct
 import argparse
 
 class UbmsBattery(can.Listener):
-    def __init__(self, voltage, capacity, connection, numberOfModules=8, numberOfStrings=2):
+    def __init__(self, voltage, capacity, connection, numberOfModules=16, numberOfStrings=4):
         self.capacity = capacity
         self.maxChargeVoltage = voltage
         self.numberOfModules = int(numberOfModules)
@@ -80,7 +80,6 @@ class UbmsBattery(can.Listener):
                 self.hw_rev = msg.data[4]
                 logging.info("U-BMS type %d with firmware version %d",
                              self.bms_type, self.firmwareVersion)
-                found = found | 4
 
         if found != 7:
             logging.warning("Handshake not complete, but continuing for debug.")
@@ -105,18 +104,17 @@ class UbmsBattery(can.Listener):
             except Exception as e:
                 logging.warning("Failed to extract current: %s", str(e))
 
-        # Module voltages: even/odd scheme, all 4 cells per module
         if 0x350 <= msg.arbitration_id <= 0x36F:
             module = (msg.arbitration_id - 0x350) >> 1
             if 0 <= module < self.numberOfModules:
-                if (msg.arbitration_id & 1) == 0:  # even, 3 cells, bytes 2-7
+                if (msg.arbitration_id & 1) == 0:
                     try:
                         cell_vals = list(struct.unpack(">hhh", msg.data[2:8]))
                         self.cellVoltages[module] = cell_vals
                         logging.debug("Module %d 1st 3 cell voltages: %s", module, cell_vals)
                     except Exception as e:
                         logging.warning("Could not unpack 3 cell voltages for module %d: %s", module, str(e))
-                else:  # odd, 1 cell, bytes 2-3
+                else:
                     try:
                         if not self.cellVoltages[module] or len(self.cellVoltages[module]) != 3:
                             self.cellVoltages[module] = [0, 0, 0]
@@ -130,7 +128,6 @@ class UbmsBattery(can.Listener):
                     except Exception as e:
                         logging.warning("Could not unpack 4th cell voltage for module %d: %s", module, str(e))
 
-        # Module SOC: 0x6A, 0x6B, 0x6C (for up to 16 modules)
         if msg.arbitration_id in range(0x6A, 0x6A + ((self.numberOfModules + 6) // 7)):
             iStart = (msg.arbitration_id - 0x6A) * 7
             fmt = "B" * (msg.dlc - 1)
@@ -144,7 +141,6 @@ class UbmsBattery(can.Listener):
             except Exception as e:
                 logging.warning("Error unpacking module SOC: %s", str(e))
 
-        # Module temperatures: FIXED to support up to 16 modules (0x76A-0x76F)
         if 0x76A <= msg.arbitration_id <= 0x76F:
             iStart = (msg.arbitration_id - 0x76A) * 3
             try:
@@ -163,8 +159,8 @@ def main():
     parser.add_argument("--capacity", "-c", type=int, default=650, help="Battery capacity, Ah")
     parser.add_argument("--voltage", "-v", type=float, default=29.0, help="Battery max charge voltage")
     parser.add_argument("--interface", "-i", type=str, default="can0", help="CAN device")
-    parser.add_argument("--modules", type=int, default=8, help="Number of modules")
-    parser.add_argument("--strings", type=int, default=2, help="Number of parallel strings")
+    parser.add_argument("--modules", type=int, default=16, help="Number of modules")
+    parser.add_argument("--strings", type=int, default=4, help="Number of parallel strings")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args()
