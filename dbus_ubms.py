@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 
 """
-D-Bus battery service for Victron, publishing all key stats directly from UbmsBattery,
-with robust debug output and publishing to both /Dc/0/Voltage and /Dc/Battery/Voltage.
+D-Bus battery service for Victron, publishing all stats directly from UbmsBattery,
+with robust debug output and compatible with argument structure and data access patterns
+shown in your provided files. Publishes both to /Dc/0/Voltage and /Dc/Battery/Voltage.
 """
 
-from gi.repository import GLib
 import platform
 import logging
 import sys
 import os
+import itertools
+import math
+
+from gi.repository import GLib
 import dbus
+from time import time
+from datetime import datetime
 from argparse import ArgumentParser
 
-from ubmsbattery import UbmsBattery
+from ubmsbattery_Version25 import UbmsBattery
 
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService
 from ve_utils import exit_on_error
 
-VERSION = "1.3.0"
+VERSION = "2.0.0"
 
 class DbusBatteryService:
     def __init__(
@@ -28,10 +34,18 @@ class DbusBatteryService:
         deviceinstance,
         voltage,
         capacity,
+        modules=16,
+        strings=4,
         productname="Valence U-BMS",
         connection="can0",
     ):
-        self._bat = UbmsBattery(capacity=capacity, voltage=voltage, connection=connection)
+        self._bat = UbmsBattery(
+            capacity=capacity,
+            voltage=voltage,
+            connection=connection,
+            numberOfModules=modules,
+            numberOfStrings=strings
+        )
         self._dbusservice = VeDbusService(
             f"{servicename}.socketcan_{connection}_di{deviceinstance}",
             register=False
@@ -52,34 +66,15 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Capacity", int(capacity))
         self._dbusservice.add_path("/InstalledCapacity", int(capacity))
         self._dbusservice.add_path("/Dc/0/Voltage", 0.0)
-        self._dbusservice.add_path("/Dc/Battery/Voltage", 0.0)  # For Victron compatibility
+        self._dbusservice.add_path("/Dc/Battery/Voltage", 0.0)
         self._dbusservice.add_path("/Dc/0/Current", 0.0)
         self._dbusservice.add_path("/Dc/Battery/Current", 0.0)
         self._dbusservice.add_path("/Dc/0/Temperature", 0.0)
-        self._dbusservice.add_path("/Dc/Battery/Temperature", 0.0)
         self._dbusservice.add_path("/Dc/0/Power", 0.0)
-        self._dbusservice.add_path("/Dc/Battery/Power", 0.0)
         self._dbusservice.add_path("/Soc", 0)
-        self._dbusservice.add_path("/Alarms/CellImbalance", 0)
-        self._dbusservice.add_path("/Alarms/LowVoltage", 0)
-        self._dbusservice.add_path("/Alarms/HighVoltage", 0)
-        self._dbusservice.add_path("/Alarms/HighDischargeCurrent", 0)
-        self._dbusservice.add_path("/Alarms/HighChargeCurrent", 0)
-        self._dbusservice.add_path("/Alarms/LowSoc", 0)
-        self._dbusservice.add_path("/Alarms/LowTemperature", 0)
-        self._dbusservice.add_path("/Alarms/HighTemperature", 0)
-        self._dbusservice.add_path("/Alarms/InternalFailure", 0)
-        self._dbusservice.add_path("/Balancing", 0)
-        self._dbusservice.add_path("/System/HasTemperature", 1)
-        self._dbusservice.add_path("/System/NrOfBatteries", getattr(self._bat, "numberOfModules", 1))
-        self._dbusservice.add_path("/System/NrOfModulesOnline", getattr(self._bat, "numberOfModules", 1))
-        self._dbusservice.add_path("/System/NrOfModulesOffline", 0)
-        self._dbusservice.add_path("/System/NrOfModulesBlockingDischarge", 0)
-        self._dbusservice.add_path("/System/NrOfModulesBlockingCharge", 0)
-        self._dbusservice.add_path("/System/NrOfBatteriesBalancing", 0)
-        self._dbusservice.add_path("/System/BatteriesParallel", getattr(self._bat, "numberOfStrings", 1))
-        self._dbusservice.add_path("/System/BatteriesSeries", getattr(self._bat, "modulesInSeries", 1))
-        self._dbusservice.add_path("/System/NrOfCellsPerBattery", getattr(self._bat, "cellsPerModule", 4))
+        # Cell voltages
+        for i in range(modules * 4):
+            self._dbusservice.add_path(f"/Voltages/Cell{i+1}", 0.0)
         self._dbusservice.add_path("/System/MinCellVoltage", 0.0)
         self._dbusservice.add_path("/System/MaxCellVoltage", 0.0)
         self._dbusservice.add_path("/System/MinCellTemperature", 0.0)
@@ -89,40 +84,55 @@ class DbusBatteryService:
         GLib.timeout_add(1000, exit_on_error, self._update)
 
     def _update(self):
-        voltage = getattr(self._bat, "voltage", 0.0)
+        # Get values directly from UbmsBattery instance
+        voltage = self._bat.get_pack_voltage() if hasattr(self._bat, "get_pack_voltage") else getattr(self._bat, "voltage", 0.0)
         current = getattr(self._bat, "current", 0.0)
         temperature = getattr(self._bat, "maxCellTemperature", 0.0)
         soc = getattr(self._bat, "soc", 0)
         power = float(voltage) * float(current)
+        min_cell_v = getattr(self._bat, "minCellVoltage", 0.0)
+        max_cell_v = getattr(self._bat, "maxCellVoltage", 0.0)
+        min_cell_t = getattr(self._bat, "minCellTemperature", 0.0)
+        max_cell_t = getattr(self._bat, "maxCellTemperature", 0.0)
+        max_pcb_t = getattr(self._bat, "maxPcbTemperature", 0.0)
+        cell_voltages = list(itertools.chain(*getattr(self._bat, "cellVoltages", [])))
 
         # Debug output
-        print(f"[DEBUG] UbmsBattery.voltage = {voltage} (type={type(voltage)})")
+        print(f"[DEBUG] UbmsBattery.get_pack_voltage() = {voltage} (type={type(voltage)})")
         print(f"[DEBUG] UbmsBattery.current = {current}")
         print(f"[DEBUG] UbmsBattery.maxCellTemperature = {temperature}")
         print(f"[DEBUG] UbmsBattery.soc = {soc}")
         print(f"[DEBUG] Published /Dc/0/Voltage = {float(voltage)}")
         print(f"[DEBUG] Published /Dc/Battery/Voltage = {float(voltage)}")
+        print(f"[DEBUG] Cell voltages: {cell_voltages}")
 
         self._dbusservice["/Dc/0/Voltage"] = float(voltage)
         self._dbusservice["/Dc/Battery/Voltage"] = float(voltage)
         self._dbusservice["/Dc/0/Current"] = float(current)
         self._dbusservice["/Dc/Battery/Current"] = float(current)
         self._dbusservice["/Dc/0/Temperature"] = float(temperature)
-        self._dbusservice["/Dc/Battery/Temperature"] = float(temperature)
         self._dbusservice["/Dc/0/Power"] = power
-        self._dbusservice["/Dc/Battery/Power"] = power
         self._dbusservice["/Soc"] = float(soc)
         self._dbusservice["/Connected"] = 1 if getattr(self._bat, "updated", -1) != -1 else 0
-
-        # Add more paths and values as needed for full Victron compatibility
+        self._dbusservice["/System/MinCellVoltage"] = float(min_cell_v)
+        self._dbusservice["/System/MaxCellVoltage"] = float(max_cell_v)
+        self._dbusservice["/System/MinCellTemperature"] = float(min_cell_t)
+        self._dbusservice["/System/MaxCellTemperature"] = float(max_cell_t)
+        self._dbusservice["/System/MaxPcbTemperature"] = float(max_pcb_t)
+        # Publish all cell voltages
+        for i, v in enumerate(cell_voltages):
+            self._dbusservice[f"/Voltages/Cell{i+1}"] = float(v) / 1000.0 if v else 0.0
 
         return True
 
 def main():
     parser = ArgumentParser(description="dbus_ubms", add_help=True)
     parser.add_argument("-i", "--interface", help="CAN interface", default="can0")
-    parser.add_argument("-c", "--capacity", help="capacity in Ah", default=130)
-    parser.add_argument("-v", "--voltage", help="maximum charge voltage V", required=True)
+    parser.add_argument("-c", "--capacity", help="capacity in Ah", default=130, type=int)
+    parser.add_argument("-v", "--voltage", help="maximum charge voltage V", required=True, type=float)
+    parser.add_argument("--modules", type=int, default=16, help="number of modules")
+    parser.add_argument("--strings", type=int, default=4, help="number of strings")
+    parser.add_argument("--deviceinstance", type=int, default=0, help="device instance")
     args = parser.parse_args()
     logging.basicConfig(format="%(levelname)-8s %(message)s", level=logging.INFO)
     os.system(f"ip link set {args.interface} type can bitrate 250000")
@@ -133,9 +143,11 @@ def main():
     DbusBatteryService(
         servicename="com.victronenergy.battery",
         connection=args.interface,
-        deviceinstance=0,
+        deviceinstance=args.deviceinstance,
         capacity=int(args.capacity),
         voltage=float(args.voltage),
+        modules=args.modules,
+        strings=args.strings,
     )
     print("Connected to dbus, switching to GLib.MainLoop()")
     GLib.MainLoop().run()
