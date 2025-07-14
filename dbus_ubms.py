@@ -13,7 +13,7 @@ from vedbus import VeDbusService
 
 from ubmsbattery import UbmsBattery
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 
 class DbusBatteryService:
     def __init__(self, servicename, deviceinstance, voltage, capacity, modules=16, strings=4, connection="can0"):
@@ -54,13 +54,13 @@ class DbusBatteryService:
 
         # Min/max cell voltage & temperature and IDs for Victron Details page
         self._dbusservice.add_path("/System/MinVoltageCell", 0.0)
-        self._dbusservice.add_path("/System/MinVoltageCellId", "M_C_")
+        self._dbusservice.add_path("/System/MinVoltageCellId", "-")
         self._dbusservice.add_path("/System/MaxVoltageCell", 0.0)
-        self._dbusservice.add_path("/System/MaxVoltageCellId", "M_C_")
+        self._dbusservice.add_path("/System/MaxVoltageCellId", "-")
         self._dbusservice.add_path("/System/MinCellTemperature", 0.0)
-        self._dbusservice.add_path("/System/MinCellTemperatureId", "M_C_")
+        self._dbusservice.add_path("/System/MinCellTemperatureId", "-")
         self._dbusservice.add_path("/System/MaxCellTemperature", 0.0)
-        self._dbusservice.add_path("/System/MaxCellTemperatureId", "M_C_")
+        self._dbusservice.add_path("/System/MaxCellTemperatureId", "-")
 
         # Real-time values
         self._dbusservice.add_path("/Dc/0/Voltage", 0.0)
@@ -68,7 +68,16 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Soc", 0)
         self._dbusservice.add_path("/Dc/0/Power", 0.0)
 
-        # Extended: alarms, errors, balancing, shutdown
+        # Standard Victron alarm paths
+        self._dbusservice.add_path("/Alarms/LowVoltage", 0)
+        self._dbusservice.add_path("/Alarms/HighVoltage", 0)
+        self._dbusservice.add_path("/Alarms/LowTemperature", 0)
+        self._dbusservice.add_path("/Alarms/HighTemperature", 0)
+        self._dbusservice.add_path("/Alarms/InternalFailure", 0)
+        self._dbusservice.add_path("/Alarms/HighChargeCurrent", 0)
+        self._dbusservice.add_path("/Alarms/HighDischargeCurrent", 0)
+
+        # Extended: custom alarms, errors, balancing, shutdown
         self._dbusservice.add_path("/Alarms/VoltageAndCellT", 0)
         self._dbusservice.add_path("/Alarms/CurrentAndPcbT", 0)
         self._dbusservice.add_path("/Alarms/InternalErrors", 0)
@@ -136,6 +145,8 @@ class DbusBatteryService:
 
         # Min/max cell voltage and location
         cell_voltages = []
+        min_v = max_v = 0.0
+        min_m = min_c = max_m = max_c = 0
         for m, mod in enumerate(cellVoltages):
             for c, v in enumerate(mod):
                 v_v = v / 1000.0 if v is not None else 0.0  # mV to V
@@ -146,9 +157,10 @@ class DbusBatteryService:
         if cell_voltages_nonzero:
             min_v, min_m, min_c = min(cell_voltages_nonzero, key=lambda x: x[0])
             max_v, max_m, max_c = max(cell_voltages_nonzero, key=lambda x: x[0])
-        else:
-            min_v = max_v = 0.0
-            min_m = min_c = max_m = max_c = 0
+
+        # Format cell location IDs for Victron (e.g. "2.3" for module 2 cell 3)
+        min_cell_id = f"{min_m}.{min_c}" if min_m and min_c else "-"
+        max_cell_id = f"{max_m}.{max_c}" if max_m and max_c else "-"
 
         # No per-cell temp, so use pack min/max
         min_t = min_cell_temp
@@ -161,34 +173,17 @@ class DbusBatteryService:
             self._dbusservice[f"/System/Module/{m+1}/Soc"] = module_soc[m] if m < len(module_soc) else 0
             self._dbusservice[f"/System/Module/{m+1}/Temperature"] = module_temp[m] if m < len(module_temp) else 0.0
 
-        # --- Debug: print all published values ---
-        print("--- D-BUS PUBLISH ---")
-        print(f"PackVoltage: {pack_voltage:.3f} V, PackCurrent: {pack_current} A, SOC: {soc}%, Power: {power:.2f} W")
-        print(f"State: {state}, Mode: {mode}, MaxCellTemp: {max_cell_temp}C, MinCellTemp: {min_cell_temp}C, MaxPCBTemp: {max_pcb_temp}C")
-        print(f"Alarms: VoltageAndCellT={voltage_cellt_alarms} CurrentAndPcbT={current_pcbt_alarms} Internal={internal_errors} Shutdown={shutdown_reason}")
-        print(f"Balanced: {balanced}, ModulesComm: {modules_comm}, ModulesBal: {modules_bal}, ChargeComplete: {charge_complete}")
-        print(f"PackMaxCellVoltage: {pack_max_cell_voltage:.3f}V, PackMinCellVoltage: {pack_min_cell_voltage:.3f}V")
-        print(f"Min cell voltage: {min_v} M{min_m}C{min_c}, Max cell voltage: {max_v} M{max_m}C{max_c}")
-        print("---------------------")
+        # --- Standard Venus OS/Victron alarms ---
+        # These thresholds are examples! Tweak them to your battery specs.
+        self._dbusservice["/Alarms/LowVoltage"] = 1 if pack_voltage < 44 else 0
+        self._dbusservice["/Alarms/HighVoltage"] = 1 if pack_voltage > 58 else 0
+        self._dbusservice["/Alarms/LowTemperature"] = 1 if min_cell_temp < 0 else 0
+        self._dbusservice["/Alarms/HighTemperature"] = 1 if max_cell_temp > 45 else 0
+        self._dbusservice["/Alarms/InternalFailure"] = 1 if internal_errors else 0
+        self._dbusservice["/Alarms/HighChargeCurrent"] = 1 if abs(pack_current) > getattr(bat, "maxChargeCurrent", 1000) else 0
+        self._dbusservice["/Alarms/HighDischargeCurrent"] = 0  # You may set based on your logic
 
-        # ---- Publish to dbus ----
-        self._dbusservice["/Dc/0/Voltage"] = pack_voltage
-        self._dbusservice["/Dc/0/Current"] = pack_current
-        self._dbusservice["/Soc"] = soc
-        self._dbusservice["/Dc/0/Power"] = power
-        self._dbusservice["/Dc/0/Temperature"] = max_cell_temp
-        self._dbusservice["/State"] = state
-        self._dbusservice["/Mode"] = mode
-
-        self._dbusservice["/System/MinVoltageCell"] = min_v
-        self._dbusservice["/System/MinVoltageCellId"] = f"M{min_m}C{min_c}" if min_m and min_c else "M_C_"
-        self._dbusservice["/System/MaxVoltageCell"] = max_v
-        self._dbusservice["/System/MaxVoltageCellId"] = f"M{max_m}C{max_c}" if max_m and max_c else "M_C_"
-        self._dbusservice["/System/MinCellTemperature"] = min_t
-        self._dbusservice["/System/MinCellTemperatureId"] = "M_C_"
-        self._dbusservice["/System/MaxCellTemperature"] = max_t
-        self._dbusservice["/System/MaxCellTemperatureId"] = "M_C_"
-
+        # ---- Custom/extended alarm info (VRM only) ----
         self._dbusservice["/Alarms/VoltageAndCellT"] = voltage_cellt_alarms
         self._dbusservice["/Alarms/CurrentAndPcbT"] = current_pcbt_alarms
         self._dbusservice["/Alarms/InternalErrors"] = internal_errors
@@ -202,6 +197,34 @@ class DbusBatteryService:
         self._dbusservice["/Status/PackMinCellVoltage"] = pack_min_cell_voltage
         self._dbusservice["/Status/PackMaxCellTemperature"] = max_cell_temp
         self._dbusservice["/Status/PackMinCellTemperature"] = min_cell_temp
+
+        # ---- D-Bus core ----
+        self._dbusservice["/Dc/0/Voltage"] = pack_voltage
+        self._dbusservice["/Dc/0/Current"] = pack_current
+        self._dbusservice["/Soc"] = soc
+        self._dbusservice["/Dc/0/Power"] = power
+        self._dbusservice["/Dc/0/Temperature"] = max_cell_temp
+        self._dbusservice["/State"] = state
+        self._dbusservice["/Mode"] = mode
+
+        self._dbusservice["/System/MinVoltageCell"] = min_v
+        self._dbusservice["/System/MinVoltageCellId"] = min_cell_id
+        self._dbusservice["/System/MaxVoltageCell"] = max_v
+        self._dbusservice["/System/MaxVoltageCellId"] = max_cell_id
+        self._dbusservice["/System/MinCellTemperature"] = min_t
+        self._dbusservice["/System/MinCellTemperatureId"] = "-"
+        self._dbusservice["/System/MaxCellTemperature"] = max_t
+        self._dbusservice["/System/MaxCellTemperatureId"] = "-"
+
+        # --- Debug: print all published values ---
+        print("--- D-BUS PUBLISH ---")
+        print(f"PackVoltage: {pack_voltage:.3f} V, PackCurrent: {pack_current} A, SOC: {soc}%, Power: {power:.2f} W")
+        print(f"State: {state}, Mode: {mode}, MaxCellTemp: {max_cell_temp}C, MinCellTemp: {min_cell_temp}C, MaxPCBTemp: {max_pcb_temp}C")
+        print(f"Alarms: LV={self._dbusservice['/Alarms/LowVoltage']} HV={self._dbusservice['/Alarms/HighVoltage']} LT={self._dbusservice['/Alarms/LowTemperature']} HT={self._dbusservice['/Alarms/HighTemperature']} Internal={self._dbusservice['/Alarms/InternalFailure']} CC={self._dbusservice['/Alarms/HighChargeCurrent']}")
+        print(f"Balanced: {balanced}, ModulesComm: {modules_comm}, ModulesBal: {modules_bal}, ChargeComplete: {charge_complete}")
+        print(f"PackMaxCellVoltage: {pack_max_cell_voltage:.3f}V, PackMinCellVoltage: {pack_min_cell_voltage:.3f}V")
+        print(f"Min cell voltage: {min_v} @ {min_cell_id}, Max cell voltage: {max_v} @ {max_cell_id}")
+        print("---------------------")
 
         return True
 
