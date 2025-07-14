@@ -21,17 +21,45 @@ except ImportError:
 log = logging.getLogger("dbus_ubms")
 logging.basicConfig(level=logging.INFO)
 
-class DbusUbmsService(dbus.service.Object):
+class DbusValue(dbus.service.Object):
+    def __init__(self, bus, path, initial_value=0):
+        dbus.service.Object.__init__(self, bus, path)
+        self._value = initial_value
+
+    @dbus.service.method('com.victronenergy.BusItem', in_signature='', out_signature='v')
+    def GetValue(self):
+        return self._value
+
+    @dbus.service.method('com.victronenergy.BusItem', in_signature='v', out_signature='b')
+    def SetValue(self, value):
+        self._value = value
+        self.PropertiesChanged('com.victronenergy.BusItem', {'Value': value}, [])
+        return True
+
+    @dbus.service.method('com.victronenergy.BusItem', in_signature='', out_signature='s')
+    def GetText(self):
+        return str(self._value)
+
+    @dbus.service.signal(dbus_interface='com.victronenergy.BusItem', signature='sa{sv}as')
+    def PropertiesChanged(self, interface, changed, invalidated):
+        pass
+
+    def set_value(self, value):
+        if self._value != value:
+            self._value = value
+            self.PropertiesChanged('com.victronenergy.BusItem', {'Value': value}, [])
+
+class DbusUbmsService:
     def __init__(self, battery, servicename='com.victronenergy.battery.ttyUBMS_Can0', deviceinstance=0, gpio_relay_pin=None):
         self.battery = battery
         self.deviceinstance = deviceinstance
         self.gpio_relay_pin = gpio_relay_pin
         self.last_alarm_state = False
 
-        bus = dbus.SystemBus()
-        dbus.service.Object.__init__(self, bus, '/')
-        self._service = bus.request_name(servicename)
-        self.paths = {}
+        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+        self.bus = dbus.SystemBus()
+        self.name = dbus.service.BusName(servicename, bus=self.bus)
+        self.value_objects = {}
 
         # Configurable thresholds
         self.thresholds = {
@@ -69,7 +97,7 @@ class DbusUbmsService(dbus.service.Object):
             '/System/NrOfCellsPerBattery': self.battery.numberOfModules * self.battery.cellsPerModule,
         }
         for p, v in static_paths.items():
-            self.add_path(p, v)
+            self.add_value_path(p, v)
 
         # Dynamic paths (updated every second)
         self.dynamic_paths = [
@@ -93,48 +121,23 @@ class DbusUbmsService(dbus.service.Object):
             '/System/Alarms/CellTemperature',
         ]
         for p in self.dynamic_paths:
-            self.add_path(p, 0)
+            self.add_value_path(p, 0)
 
         # Add dynamic paths for each module's SOC
         for i in range(self.battery.numberOfModules):
             path = f'/Module/{i}/Soc'
-            self.add_path(path, 0)
+            self.add_value_path(path, 0)
             self.dynamic_paths.append(path)
 
         # GLib Timer for updates
         GLib.timeout_add(1000, self._update)
 
-    def add_path(self, path, value):
-        self.paths[path] = value
+    def add_value_path(self, path, value):
+        self.value_objects[path] = DbusValue(self.bus, path, value)
 
     def set_dbus_value(self, path, value):
-        if self.paths.get(path) != value:
-            self.paths[path] = value
-            self.PropertiesChanged('com.victronenergy.BusItem', {path: value}, [])
-
-    @dbus.service.signal(dbus_interface='com.victronenergy.BusItem', signature='sa{sv}as')
-    def PropertiesChanged(self, interface, changed, invalidated):
-        pass
-
-    # D-Bus Method: GetValue
-    @dbus.service.method('com.victronenergy.BusItem', in_signature='s', out_signature='v')
-    def GetValue(self, path):
-        return self.paths.get(path, 0)
-
-    # D-Bus Method: SetValue (for writable paths, if needed)
-    @dbus.service.method('com.victronenergy.BusItem', in_signature='sv', out_signature='b')
-    def SetValue(self, path, value):
-        if path in self.paths:
-            self.paths[path] = value
-            self.PropertiesChanged('com.victronenergy.BusItem', {path: value}, [])
-            return True
-        return False
-
-    # D-Bus Method: GetText (optional, for completeness)
-    @dbus.service.method('com.victronenergy.BusItem', in_signature='s', out_signature='s')
-    def GetText(self, path):
-        val = self.paths.get(path, "")
-        return str(val)
+        if path in self.value_objects:
+            self.value_objects[path].set_value(value)
 
     def set_relay(self, state):
         if gpio_available and self.gpio_relay_pin is not None:
@@ -226,9 +229,6 @@ def main():
     parser.add_argument("--max_discharge_current", type=int, default=100)
     parser.add_argument("--min_soc", type=int, default=5)
     args = parser.parse_args()
-
-    # --- D-Bus main loop must be set BEFORE any D-Bus object creation ---
-    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
     logging.basicConfig(level=logging.INFO)
 
