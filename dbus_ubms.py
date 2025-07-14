@@ -6,13 +6,9 @@ import os
 import signal
 from gi.repository import GLib
 
-# Make sure the ve lib path is correct for your Venus OS install
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
-from vedbus import VeDbusService  # noqa: E402
-from ve_utils import exit_on_error  # noqa: E402
-from settingsdevice import SettingsDevice  # noqa: E402
-from dbus.mainloop.glib import DBusGMainLoop   # <-- THIS LINE GOES HERE
-
+from vedbus import VeDbusService
+from dbus.mainloop.glib import DBusGMainLoop
 
 class UbmsBattery:
     def __init__(self, interface):
@@ -56,10 +52,8 @@ class DbusUbmsService:
         service_name = f'com.victronenergy.battery.socketcan_{self._bat.interface}_di{deviceinstance}'
         logging.info(f"Registering D-Bus service name: {service_name}")
 
-        self._dbusservice = VeDbusService(
-            service_name,
-            deviceinstance=deviceinstance
-        )
+        # PATCH: Only pass supported arguments, do not use deviceinstance.
+        self._dbusservice = VeDbusService(service_name)
 
         # *** REQUIRED FOR DETECTION ***
         self._dbusservice.add_path('/DeviceInstance', deviceinstance, writeable=False)
