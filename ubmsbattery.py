@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
 
-"""
-Data acquisition and decoding of Valence U-BMS messages on CAN bus for debugging.
-- Accepts any number of modules and strings (set via command line or defaults to 16/4).
-- Receives all CAN frames (no filters), prints every CAN message.
-- Decodes cell voltages, module voltages, module SOCs.
-- Prints pack voltage as the sum of modules in one string (e.g., for 16 modules and 4 strings, sum modules 0,1,2,3).
-- At the end, prints all module voltages, SOCs, and cell voltages.
-"""
-
 import logging
 import can
 import struct
@@ -17,7 +8,7 @@ import time
 
 class UbmsBattery(can.Listener):
     opModes = {0: "Standby", 1: "Charge", 2: "Drive"}
-    opState = {0: 14, 1: 9, 2: 9}  # Victron BMS states
+    opState = {0: 14, 1: 9, 2: 9}
 
     def __init__(self, voltage, capacity, connection, numberOfModules=16, numberOfStrings=4):
         self.capacity = capacity
@@ -64,16 +55,14 @@ class UbmsBattery(can.Listener):
         self._ci = can.interface.Bus(
             channel=connection,
             bustype="socketcan"
-            # No filters for debug, receive all frames
         )
 
-        # Don't require handshake for debugging
         self.notifier = can.Notifier(self._ci, [self])
 
     def on_message_received(self, msg):
         print(f"CAN RX: {msg.arbitration_id:03X} {msg.data.hex()} (dlc={msg.dlc})")
         self.updated = getattr(msg, "timestamp", 0)
-        # --- Try to extract data if IDs match known Valence protocol ---
+
         if msg.arbitration_id == 0xC0:
             self.soc = msg.data[0]
             self.mode = msg.data[1]
@@ -94,11 +83,20 @@ class UbmsBattery(can.Listener):
             self.minCellVoltage = struct.unpack("<h", msg.data[6:8])[0] * 0.001
         elif 0x350 <= msg.arbitration_id < 0x350 + self.numberOfModules * 2:
             module = (msg.arbitration_id - 0x350) >> 1
-            # Fix: skip first byte (module id), then read 4x2 bytes for cell voltages
-            if module < self.numberOfModules and (msg.arbitration_id & 1) == 0 and len(msg.data) >= 9:
-                try:
-                    self.cellVoltages[module] = struct.unpack(">4H", msg.data[1:9])
-                except Exception:
+            # Print CAN details for debug
+            print(f"0x{msg.arbitration_id:X} module={module} data={msg.data.hex()} len={len(msg.data)}")
+            if module < self.numberOfModules and (msg.arbitration_id & 1) == 0:
+                if len(msg.data) >= 9:
+                    try:
+                        self.cellVoltages[module] = struct.unpack(">4H", msg.data[1:9])
+                    except Exception:
+                        self.cellVoltages[module] = (0, 0, 0, 0)
+                elif len(msg.data) == 8:
+                    try:
+                        self.cellVoltages[module] = struct.unpack(">3H", msg.data[1:7]) + (0,)
+                    except Exception:
+                        self.cellVoltages[module] = (0, 0, 0, 0)
+                else:
                     self.cellVoltages[module] = (0, 0, 0, 0)
                 self.moduleVoltage[module] = sum(self.cellVoltages[module])
         elif 0x6A <= msg.arbitration_id < 0x6A + (self.numberOfModules // 7 + 1):
@@ -110,7 +108,6 @@ class UbmsBattery(can.Listener):
                     self.moduleSoc[iStart + idx] = (m * 100) >> 8
 
     def get_pack_voltage(self):
-        # Sum only the modules in one string (modules 0,1,2,3 for 16 modules/4 strings)
         pack_voltage = sum(self.moduleVoltage[:self.modulesInSeries]) / 1000.0
         return pack_voltage
 
