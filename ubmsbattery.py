@@ -25,9 +25,9 @@ class UbmsBattery(can.Listener):
         self.soc = 0
         self.mode = 0
         self.state = ""
-        self.voltage = 0
-        self.current = 0
-        self.temperature = 0
+        self.voltage = 0.0
+        self.current = 0.0
+        self.temperature = 25.0
         self.balanced = True
 
         self.voltageAndCellTAlarms = 0
@@ -38,11 +38,11 @@ class UbmsBattery(can.Listener):
         self.maxPcbTemperature = 0
         self.maxCellTemperature = 0
         self.minCellTemperature = 0
-        self.cellVoltages = [(0, 0, 0, 0) for i in range(self.numberOfModules)]
-        self.moduleVoltage = [0 for i in range(self.numberOfModules)]
-        self.moduleCurrent = [0 for i in range(self.numberOfModules)]
-        self.moduleSoc = [0 for i in range(self.numberOfModules)]
-        self.moduleTemp = [0 for i in range(self.numberOfModules)]
+        self.cellVoltages = [[0, 0, 0, 0] for _ in range(self.numberOfModules)]
+        self.moduleVoltage = [0.0 for _ in range(self.numberOfModules)]
+        self.moduleCurrent = [0.0 for _ in range(self.numberOfModules)]
+        self.moduleSoc = [0 for _ in range(self.numberOfModules)]
+        self.moduleTemp = [250 for _ in range(self.numberOfModules)]  # 25.0°C in deci-degrees
         self.maxCellVoltage = 3.2
         self.minCellVoltage = 3.2
         self.maxChargeCurrent = 5.0
@@ -65,43 +65,58 @@ class UbmsBattery(can.Listener):
             ],
         )
 
-        if self._connect_and_verify(connection):
-            pass
+        # Register this instance as a listener
+        self.notifier = can.Notifier(self._ci, [self])
 
-    def _connect_and_verify(self, connection):
-        # Implement your handshake logic or just return True for now
-        return True
+    def on_message_received(self, msg):
+        self.on_message(msg)
 
     def on_message(self, msg):
-        # Example CAN message handling logic.
+        # Example CAN message handling logic (should be adapted to your needs)
+        # The below is a template and should be updated for your actual CAN frames
         if 0x350 <= msg.arbitration_id <= (0x350 + self.numberOfModules * 2 - 1):
             module = (msg.arbitration_id - 0x350) // 2
             if (msg.arbitration_id & 1) == 0:
-                # Even arbitration_id: cell voltages
-                self.cellVoltages[module] = struct.unpack(">4H", msg.data)
-                self.moduleVoltage[module] = sum(self.cellVoltages[module])
+                # Even arbitration_id: cell voltages (4 cells, 2 bytes each, big endian)
+                self.cellVoltages[module] = list(struct.unpack(">4H", msg.data))
+                self.moduleVoltage[module] = sum(self.cellVoltages[module]) / 1000.0  # mV->V
             else:
                 # Odd arbitration_id: temperature and SOC
-                self.moduleTemp[module], self.moduleSoc[module] = struct.unpack(">2H", msg.data[:4])
+                temp, soc = struct.unpack(">2H", msg.data[:4])
+                self.moduleTemp[module] = temp
+                self.moduleSoc[module] = soc
         elif msg.arbitration_id == 0xC0:
+            # SOC message (example)
             self.soc = msg.data[0]
         elif msg.arbitration_id == 0xC1:
-            self.current = struct.unpack(">h", msg.data[:2])[0]
+            # Current message (example, signed int16, 0.1A units)
+            self.current = struct.unpack(">h", msg.data[:2])[0] / 10.0
         elif msg.arbitration_id == 0xC2:
+            # Voltage message (example, uint16, 0.01V units)
             self.voltage = struct.unpack(">H", msg.data[:2])[0] / 100.0
 
+        # You may want to add more message parsing based on your BMS CAN protocol
+
     def get_total_voltage(self):
-        # Prefer summed cell voltages for accuracy
-        return sum([sum(cells) for cells in self.cellVoltages if cells])
+        # Use sum of module voltages if available, else fallback to last known value
+        v = sum(self.moduleVoltage)
+        return v if v > 0 else self.voltage
 
     def get_soc(self):
-        return self.soc
+        # Return overall SOC (could average module SOCs if available)
+        if any(self.moduleSoc):
+            return sum(self.moduleSoc) / len(self.moduleSoc)
+        else:
+            return self.soc
 
     def get_current(self):
-        return self.current / 10.0
+        return self.current
 
     def get_temperature(self):
-        return max(self.moduleTemp) / 10.0 if self.moduleTemp else 25.0
+        # Return max module temperature, converting from deci-degrees
+        if self.moduleTemp:
+            return max(self.moduleTemp) / 10.0
+        return self.temperature
 
     def get_firmware_version(self):
         return self.firmwareVersion
