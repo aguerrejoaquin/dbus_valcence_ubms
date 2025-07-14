@@ -396,37 +396,56 @@ class UbmsBattery(can.Listener):
         return True
 
 # === All code below is to simply run it from the commandline for debugging purposes ===
+import threading
+
+def debug_command_loop(bat):
+    print("\nType a command to inspect the battery (commands: soc, volt, temp, all, help, exit):")
+    while True:
+        try:
+            cmd = input("> ").strip().lower()
+            if cmd == "soc":
+                print("Module SOCs:", bat.moduleSoc)
+            elif cmd == "volt":
+                for i in range(bat.numberOfModules):
+                    print(f"Module {i}: cell voltages: {bat.cellVoltages[i]}")
+                print("Module voltages:", bat.moduleVoltage)
+                print(f"Pack voltage: {bat.voltage:.3f} V")
+            elif cmd == "temp":
+                print("Module temperatures:", bat.moduleTemp)
+                print(f"Max cell temp: {bat.maxCellTemperature}, Min cell temp: {bat.minCellTemperature}, Max PCB temp: {bat.maxPcbTemperature}")
+            elif cmd == "all":
+                print(f"BMS type: {bat.bms_type}, Firmware: {bat.firmwareVersion}, HW rev: {bat.hw_rev}")
+                print(f"Number of modules: {bat.numberOfModules}")
+                print("Module SOCs:", bat.moduleSoc)
+                for i in range(bat.numberOfModules):
+                    print(f"Module {i}: cell voltages: {bat.cellVoltages[i]}")
+                print("Module voltages:", bat.moduleVoltage)
+                print(f"Pack voltage: {bat.voltage:.3f} V")
+                print("Module temperatures:", bat.moduleTemp)
+                print(f"Max cell temp: {bat.maxCellTemperature}, Min cell temp: {bat.minCellTemperature}, Max PCB temp: {bat.maxPcbTemperature}")
+            elif cmd == "help":
+                print("Commands: soc, volt, temp, all, help, exit")
+            elif cmd == "exit":
+                print("Exiting debug loop.")
+                break
+            else:
+                print("Unknown command. Type 'help' for options.")
+        except (EOFError, KeyboardInterrupt):
+            print("Exiting debug loop.")
+            break
+
 def main():
     import sys
+    import time
 
     logging.basicConfig(format="%(levelname)-8s %(message)s", level=logging.DEBUG)
 
     bat = UbmsBattery(capacity=650, voltage=29.0, connection="can0")
+    notifier = can.Notifier(bat._ci, [bat])
 
-    listeners = [
-        bat
-    ]
-
-    notifier = can.Notifier(bat._ci, listeners)
-
-    import time
-    # Print out info every 5 seconds for demo/debug
+    # Start the debug command loop in the main thread
     try:
-        while True:
-            logging.info("BMS type: %d", bat.bms_type)
-            logging.info("Firmware version: %d", bat.firmwareVersion)
-            logging.info("Hardware version: %d", bat.hw_rev)
-            logging.info("Number of modules: %d", bat.numberOfModules)
-            logging.info("Module SOCs: %s", bat.moduleSoc)
-            logging.info("Max cell voltage: %1.3fV", bat.maxCellVoltage)
-            logging.info("Min cell voltage: %1.3fV", bat.minCellVoltage)
-            logging.info("Pack voltage: %1.3fV", bat.voltage)
-            logging.info("Cell voltages:")
-            for i in range(bat.numberOfModules):
-                logging.info("Module %d: %s", i, bat.cellVoltages[i])
-            time.sleep(5)
-    except KeyboardInterrupt:
-        pass
+        debug_command_loop(bat)
     finally:
         notifier.stop()
         bat._ci.shutdown()
