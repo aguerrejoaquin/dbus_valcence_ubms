@@ -95,6 +95,7 @@ class DbusUbmsService:
             '/System/NrOfModules': self.battery.numberOfModules,
             '/System/NrOfCellsPerModule': self.battery.cellsPerModule,
             '/System/NrOfCellsPerBattery': self.battery.numberOfModules * self.battery.cellsPerModule,
+            '/ServiceMapping': 'battery',
         }
         for p, v in static_paths.items():
             self.add_value_path(p, v)
@@ -146,9 +147,9 @@ class DbusUbmsService:
 
     def _update(self):
         # --- Read battery values ---
-        v = self.battery.get_pack_voltage()
-        c = self.battery.current
-        soc = self.battery.soc
+        v = float(self.battery.get_pack_voltage())
+        c = float(self.battery.current)
+        soc = float(self.battery.soc)
 
         # Prepare min/max cell voltage and temperature, with IDs if possible
         min_v = min([min(cells) for cells in self.battery.cellVoltages if any(cells)]) if self.battery.cellVoltages else 0
@@ -191,9 +192,9 @@ class DbusUbmsService:
             log.info(f"Module {i} SOC: {msoc}%")
 
         # --- Publish to D-Bus ---
-        self.set_dbus_value('/Dc/0/Voltage', v)
-        self.set_dbus_value('/Dc/0/Current', c)
-        self.set_dbus_value('/Soc', soc)
+        self.set_dbus_value('/Dc/0/Voltage', float(v))
+        self.set_dbus_value('/Dc/0/Current', float(c))
+        self.set_dbus_value('/Soc', float(soc))
         self.set_dbus_value('/System/MinCellVoltage', min_v / 1000.0)
         self.set_dbus_value('/System/MaxCellVoltage', max_v / 1000.0)
         self.set_dbus_value('/System/MinCellVoltageCellId', int("%d%02d" % min_id) if min_id[0] >= 0 else 0)
@@ -204,9 +205,9 @@ class DbusUbmsService:
         self.set_dbus_value('/System/MaxCellTemperatureCellId', max_tid)
         for path, value in alarms.items():
             self.set_dbus_value(path, value)
-        # Publish each module's SOC
+        # Publish each module's SOC (as float)
         for i, msoc in enumerate(self.battery.moduleSoc):
-            self.set_dbus_value(f'/Module/{i}/Soc', msoc)
+            self.set_dbus_value(f'/Module/{i}/Soc', float(msoc))
 
         return True  # Continue timer
 
