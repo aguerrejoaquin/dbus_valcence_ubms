@@ -1,68 +1,134 @@
 #!/usr/bin/env python3
 import sys
-import time
 import logging
 import argparse
-import dbus
-import dbus.service
-import dbus.mainloop.glib
+import os
+import signal
 from gi.repository import GLib
+
+sys.path.insert(1, '/opt/victronenergy/velib/python')
+from dbus.mainloop.glib import DBusGMainLoop
+from dbusservice import VeDbusService
 
 class UbmsBattery:
     def __init__(self, interface):
         self.voltage = 52.0
         self.current = 10.0
         self.soc = 80.0
-        # Add more attributes as needed
+        self.maxCellVoltage = 3.55
+        self.minCellVoltage = 3.31
+        self.cellVoltages = [3.31, 3.33, 3.45, 3.40, 3.55, 3.41, 3.38, 3.49]
+        self.cellTemperatures = [25.1, 25.9, 26.3, 27.0, 26.5, 25.6, 25.8, 26.1]
+        self.moduleSocs = [80.0]  # Extend if you have more modules
+        self.moduleTemperatures = [26.0]  # Extend if you have more modules
+        self.maxCellTemperature = max(self.cellTemperatures)
+        self.minCellTemperature = min(self.cellTemperatures)
+        self.state = "charging"
+        self.chargeComplete = False
+        self.numberOfModules = 1
+        self.numberOfModulesCommunicating = 1
+        self.numberOfModulesBalancing = 0
 
     def update_from_can(self):
         import random
         self.voltage = 52.0 + random.uniform(-1.0, 1.0)
         self.current = 10.0 + random.uniform(-0.5, 0.5)
         self.soc = 80.0 + random.uniform(-2.0, 2.0)
-
-class BatteryValue(dbus.service.Object):
-    def __init__(self, bus, path, getter):
-        super().__init__(bus, path)
-        self.getter = getter
-
-    @dbus.service.method('com.victronenergy.BusItem', in_signature='', out_signature='v')
-    def GetValue(self):
-        return dbus.Double(self.getter())
-
-    @dbus.service.method('org.freedesktop.DBus.Introspectable', in_signature='', out_signature='s')
-    def Introspect(self):
-        return ""
+        self.cellVoltages = [3.3 + random.uniform(0, 0.2) for _ in range(8)]
+        self.cellTemperatures = [25.0 + random.uniform(0, 3.0) for _ in range(8)]
+        self.moduleSocs = [self.soc + random.uniform(-5, 5) for _ in range(self.numberOfModules)]
+        self.moduleTemperatures = [26.0 + random.uniform(-2, 2) for _ in range(self.numberOfModules)]
+        self.maxCellVoltage = max(self.cellVoltages)
+        self.minCellVoltage = min(self.cellVoltages)
+        self.maxCellTemperature = max(self.cellTemperatures)
+        self.minCellTemperature = min(self.cellTemperatures)
 
 class DbusUbmsService:
-    def __init__(self, battery, servicename):
-        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-        self._bus = dbus.SystemBus()
-        self._bus_name = dbus.service.BusName(servicename, bus=self._bus)
+    def __init__(self, battery, deviceinstance, productname, connection, serial):
         self._bat = battery
 
-        # Register actual D-Bus objects for each value
-        self.voltage_obj = BatteryValue(self._bus, "/Dc/0/Voltage", lambda: self._bat.voltage)
-        self.current_obj = BatteryValue(self._bus, "/Dc/0/Current", lambda: self._bat.current)
-        self.soc_obj = BatteryValue(self._bus, "/Soc", lambda: self._bat.soc)
+        service_name = 'com.victronenergy.battery.ubms_' + str(deviceinstance)
+        logging.info(f"Registering D-Bus service name: {service_name}")
 
+        self._dbusservice = VeDbusService(
+            service_name,
+            deviceinstance=deviceinstance
+        )
+
+        # Product info
+        self._dbusservice.add_path('/Mgmt/ProcessName', os.path.basename(__file__))
+        self._dbusservice.add_path('/Mgmt/ProcessVersion', 'v1.0')
+        self._dbusservice.add_path('/Mgmt/Connection', connection)
+        self._dbusservice.add_path('/ProductId', 0xB004, writeable=False)
+        self._dbusservice.add_path('/ProductName', productname)
+        self._dbusservice.add_path('/FirmwareVersion', '1.0')
+        self._dbusservice.add_path('/HardwareVersion', '1.0')
+        self._dbusservice.add_path('/Serial', serial)
+
+        # D-Bus battery paths
+        self._dbusservice.add_path('/Dc/0/Voltage', 0, writeable=False)
+        self._dbusservice.add_path('/Dc/0/Current', 0, writeable=False)
+        self._dbusservice.add_path('/Soc', 0, writeable=False)
+        self._dbusservice.add_path('/System/NrOfModules', 0, writeable=False)
+        self._dbusservice.add_path('/System/NrOfModulesOnline', 0, writeable=False)
+        self._dbusservice.add_path('/System/NrOfModulesBalancing', 0, writeable=False)
+        self._dbusservice.add_path('/System/MinCellTemperature', 0, writeable=False)
+        self._dbusservice.add_path('/System/MaxCellTemperature', 0, writeable=False)
+        self._dbusservice.add_path('/System/MinCellVoltage', 0, writeable=False)
+        self._dbusservice.add_path('/System/MaxCellVoltage', 0, writeable=False)
+        self._dbusservice.add_path('/System/NrOfCells', len(self._bat.cellVoltages), writeable=False)
+
+        # Per-cell voltage and temperature
+        for idx in range(len(self._bat.cellVoltages)):
+            self._dbusservice.add_path(f'/System/Cell/{idx+1}/Voltage', 0, writeable=False)
+            self._dbusservice.add_path(f'/System/Cell/{idx+1}/Temperature', 0, writeable=False)
+
+        # Per-module SoC and temperature
+        for idx in range(self._bat.numberOfModules):
+            self._dbusservice.add_path(f'/System/Module/{idx+1}/Soc', 0, writeable=False)
+            self._dbusservice.add_path(f'/System/Module/{idx+1}/Temperature', 0, writeable=False)
+
+        # Start update timer
         GLib.timeout_add(1000, self._update)
 
     def _update(self):
         self._bat.update_from_can()
-        logging.info("Voltage: %s", self._bat.voltage)
-        logging.info("Current: %s", self._bat.current)
-        logging.info("SoC: %s", self._bat.soc)
+        logging.info(f"UbmsBattery.voltage: {self._bat.voltage}")
+        logging.info(f"UbmsBattery.current: {self._bat.current}")
+        logging.info(f"UbmsBattery.soc: {self._bat.soc}")
+
+        self._dbusservice['/Dc/0/Voltage'] = float(self._bat.voltage)
+        self._dbusservice['/Dc/0/Current'] = float(self._bat.current)
+        self._dbusservice['/Soc'] = float(self._bat.soc)
+        self._dbusservice['/System/NrOfModules'] = int(self._bat.numberOfModules)
+        self._dbusservice['/System/NrOfModulesOnline'] = int(self._bat.numberOfModulesCommunicating)
+        self._dbusservice['/System/NrOfModulesBalancing'] = int(self._bat.numberOfModulesBalancing)
+        self._dbusservice['/System/MinCellTemperature'] = float(self._bat.minCellTemperature)
+        self._dbusservice['/System/MaxCellTemperature'] = float(self._bat.maxCellTemperature)
+        self._dbusservice['/System/MinCellVoltage'] = float(self._bat.minCellVoltage)
+        self._dbusservice['/System/MaxCellVoltage'] = float(self._bat.maxCellVoltage)
+        self._dbusservice['/System/NrOfCells'] = len(self._bat.cellVoltages)
+
+        for idx, v in enumerate(self._bat.cellVoltages):
+            self._dbusservice[f'/System/Cell/{idx+1}/Voltage'] = float(v)
+        for idx, t in enumerate(self._bat.cellTemperatures):
+            self._dbusservice[f'/System/Cell/{idx+1}/Temperature'] = float(t)
+        for idx, soc in enumerate(self._bat.moduleSocs):
+            self._dbusservice[f'/System/Module/{idx+1}/Soc'] = float(soc)
+        for idx, t in enumerate(self._bat.moduleTemperatures):
+            self._dbusservice[f'/System/Module/{idx+1}/Temperature'] = float(t)
+
         return True
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="DBus UBMS Battery Service with Debug Logging")
+    parser = argparse.ArgumentParser(description="DBus UBMS Battery Service for Victron Venus OS")
     parser.add_argument('--interface', '-i', type=str, default='can0', help='CAN interface')
-    parser.add_argument('--capacity', '-c', type=float, required=True, help='Battery capacity')
-    parser.add_argument('--voltage', '-v', type=float, required=True, help='Nominal voltage')
     parser.add_argument('--deviceinstance', type=int, default=0, help='Device instance')
     parser.add_argument('--debug', '-d', action='store_true', help='Enable debug logging')
     parser.add_argument('--logfile', type=str, default=None, help='Log file')
+    parser.add_argument('--productname', type=str, default='UBMS Battery', help='Product Name')
+    parser.add_argument('--connection', type=str, default='CAN-bus', help='Connection string')
+    parser.add_argument('--serial', type=str, default='UBMS001', help='Serial number')
     return parser.parse_args()
 
 def main():
@@ -76,10 +142,20 @@ def main():
     logging.info("Starting dbus_ubms.py with args: %s", args)
 
     battery = UbmsBattery(args.interface)
-    servicename = f'com.victronenergy.battery.socketcan_{args.interface}_di{args.deviceinstance}'
-    logging.info("Registering D-Bus service name: %s", servicename)
-    service = DbusUbmsService(battery, servicename)
+    DBusGMainLoop(set_as_default=True)
+    service = DbusUbmsService(
+        battery,
+        deviceinstance=args.deviceinstance,
+        productname=args.productname,
+        connection=args.connection,
+        serial=args.serial
+    )
 
+    def handle_sigterm(*args):
+        logging.info("SIGTERM received, exiting.")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
     try:
         loop = GLib.MainLoop()
         loop.run()
