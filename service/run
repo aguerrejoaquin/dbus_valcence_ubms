@@ -1,6 +1,17 @@
 #!/bin/sh
+set -e
+
 echo "*** starting dbus-ubms ***"
-echo $DEV
-#ip link set can8 up type can bitrate 250000
+echo "DEV: $DEV"
+
+# Uncomment and adjust the CAN interface setup if needed:
+# ip link set can8 down || true
+# ip link set can8 up type can bitrate 250000
+
+# Ensure Python 3 is used
+PYTHON=python3
+SCRIPT="../dbus_ubms.py"
+
+# Redirect stderr to stdout, apply softlimit, and exec the service
 exec 2>&1
-exec softlimit -d 100000000 -s 1000000 -a 100000000 python ../dbus_ubms.py -i can8 -v 58 -c 552 
+exec softlimit -d 100000000 -s 1000000 -a 100000000 $PYTHON $SCRIPT -i can0 -v 58 -c 552
