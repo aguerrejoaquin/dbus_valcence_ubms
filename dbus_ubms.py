@@ -24,7 +24,7 @@ from vedbus import VeDbusService  # noqa: E402
 from ve_utils import exit_on_error  # noqa: E402
 from settingsdevice import SettingsDevice  # noqa: E402
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 def handle_changed_setting(setting, oldvalue, newvalue):
     logging.debug(
@@ -84,7 +84,6 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Soh", 100)
         self._dbusservice.add_path("/Capacity", int(capacity))
         self._dbusservice.add_path("/InstalledCapacity", int(capacity))
-        self._dbusservice.add_path("/Dc/0/Temperature", 25)
         self._dbusservice.add_path("/Info/MaxChargeCurrent", 0)
         self._dbusservice.add_path("/Info/MaxDischargeCurrent", 0)
         self._dbusservice.add_path("/Info/MaxChargeVoltage", float(voltage))
@@ -125,6 +124,7 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Dc/0/Voltage", 0.0)
         self._dbusservice.add_path("/Dc/0/Current", 0.0)
         self._dbusservice.add_path("/Dc/0/Power", 0.0)
+        # Only add_path for /Dc/0/Temperature ONCE to avoid KeyError!
         self._dbusservice.add_path("/Dc/0/Temperature", 0.0)
         self._dbusservice.add_path("/Soc", 0)
 
@@ -177,7 +177,7 @@ class DbusBatteryService:
         self._dbusservice["/State"] = getattr(self._bat, "state", 14)
         self._dbusservice["/Mode"] = getattr(self._bat, "mode", 1)
 
-        # Voltage, Current, Power, Temp
+        # Voltage, Current, Power, Temp (use assignment, NOT add_path)
         voltage = getattr(self._bat, "voltage", 0.0)
         current = getattr(self._bat, "current", 0.0)
         temperature = getattr(self._bat, "maxCellTemperature", 0.0)
