@@ -12,7 +12,7 @@ from argparse import ArgumentParser
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService
 
-from ubmsbattery_Version25 import UbmsBattery
+from ubmsbattery import UbmsBattery
 
 VERSION = "1.3.0"
 
