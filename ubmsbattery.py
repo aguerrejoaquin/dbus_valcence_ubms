@@ -34,7 +34,8 @@ class UbmsBattery(can.Listener):
         self.maxPcbTemperature = 0
         self.maxCellTemperature = 0
         self.minCellTemperature = 0
-        self.cellVoltages = [(0, 0, 0, 0) for _ in range(self.numberOfModules)]
+        # cellVoltages: list of lists [module][cell] in mV
+        self.cellVoltages = [[0, 0, 0, 0] for _ in range(self.numberOfModules)]
         self.moduleVoltage = [0 for _ in range(self.numberOfModules)]
         self.moduleCurrent = [0 for _ in range(self.numberOfModules)]
         self.moduleSoc = [0 for _ in range(self.numberOfModules)]
@@ -90,14 +91,18 @@ class UbmsBattery(can.Listener):
                     # Even: cells 1-3
                     c1, c2, c3 = struct.unpack("<3H", msg.data[1:7])
                     c4 = self.cellVoltages[module][3] if self.cellVoltages[module] else 0
-                    self.cellVoltages[module] = (c1, c2, c3, c4)
+                    self.cellVoltages[module] = [c1, c2, c3, c4]
                     self.moduleVoltage[module] = c1 + c2 + c3 + c4
                 elif (msg.arbitration_id & 1) == 1 and len(msg.data) >= 4:
                     # Odd: cell 4 only
                     c4 = (msg.data[2] << 8) | msg.data[1]
                     c1, c2, c3 = self.cellVoltages[module][:3]
-                    self.cellVoltages[module] = (c1, c2, c3, c4)
+                    self.cellVoltages[module] = [c1, c2, c3, c4]
                     self.moduleVoltage[module] = c1 + c2 + c3 + c4
+
+                # Debug print each time a module is updated
+                print(f"Updating module {module+1}: cells={self.cellVoltages[module]}, moduleVoltage={self.moduleVoltage[module]} mV")
+
         elif 0x6A <= msg.arbitration_id < 0x6A + (self.numberOfModules // 7 + 1):
             iStart = (msg.arbitration_id - 0x6A) * 7
             fmt = "B" * (msg.dlc - 1)
@@ -106,7 +111,20 @@ class UbmsBattery(can.Listener):
                 if (iStart + idx) < len(self.moduleSoc):
                     self.moduleSoc[iStart + idx] = (m * 100) >> 8
 
+        # --- Debug: Print cell & module voltages after every CAN message ---
+        print("----- Battery State Debug -----")
+        for idx, cells in enumerate(self.cellVoltages):
+            print(f"Module {idx+1:02}: " + " ".join(f"{v/1000:.3f}V" for v in cells))
+        print("Module voltages:", [f"{v}mV" for v in self.moduleVoltage])
+        try:
+            pack_voltage = self.get_pack_voltage()
+            print(f"Pack voltage (sum of modules 0-{self.modulesInSeries-1}): {pack_voltage:.3f} V")
+        except Exception as e:
+            print(f"Pack voltage calculation error: {e}")
+        print("-------------------------------")
+
     def get_pack_voltage(self):
+        # sum only the modules in series, not all in array (for parallel configs)
         pack_voltage = sum(self.moduleVoltage[:self.modulesInSeries]) / 1000.0
         return pack_voltage
 
