@@ -19,7 +19,7 @@ from time import time
 from datetime import datetime
 from argparse import ArgumentParser
 
-from ubmsbattery_Version25 import UbmsBattery
+from ubmsbattery import UbmsBattery
 
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService
