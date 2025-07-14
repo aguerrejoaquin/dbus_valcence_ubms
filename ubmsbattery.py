@@ -2,14 +2,16 @@
 
 """
 Data acquisition and decoding of Valence U-BMS messages on CAN bus
+Adapted for generic number of modules and strings.
 To overcome the low resolution of the pack voltage(>=1V) the cell voltages are summed up.
-In order for this to work the first x modules of a xSyP pack should have assigned module IDs 1 to x
-The BMS should be operated in slave mode, VMU packages are being sent
+For this to work, the first x modules of a xSyP pack should have assigned module IDs 1 to x.
+The BMS should be operated in slave mode, VMU packages are being sent.
 """
 
 import logging
 import can
 import struct
+import argparse
 
 class UbmsBattery(can.Listener):
     opModes = {0: "Standby", 1: "Charge", 2: "Drive"}
@@ -60,11 +62,8 @@ class UbmsBattery(can.Listener):
 
         self._ci = can.interface.Bus(
             channel=connection,
-            bustype="socketcan",
-            can_filters=[
-                {"can_id": 0x0CF, "can_mask": 0xFF0},  # BMS status
-                {"can_id": 0x180, "can_mask": 0xFFF},  # Firmware version and BMS type
-            ],
+            bustype="socketcan"
+            # No filters for debug, receive all frames
         )
 
         if self._connect_and_verify(connection):
@@ -73,7 +72,7 @@ class UbmsBattery(can.Listener):
                 arbitration_id=0x440, data=[0, 2, 0, 0], is_extended_id=False
             )  # default: drive mode
             self.cyclicModeTask = self._ci.send_periodic(msg, 1)
-            notifier = can.Notifier(self._ci, [self])
+            self.notifier = can.Notifier(self._ci, [self])
         else:
             logging.error("Failed to connect to a supported Valence U-BMS")
 
@@ -100,26 +99,9 @@ class UbmsBattery(can.Listener):
                     msg.data[1],
                     msg.data[5],
                 )
-                if msg.data[2] & 1 != 0:
-                    logging.info(
-                        "The number of modules communicating is less than configured."
-                    )
-                if msg.data[3] & 2 != 0:
-                    logging.info(
-                        "The number of modules communicating is higher than configured."
-                    )
                 found = found | 2
 
             elif msg.arbitration_id == 0xC1 and found & 1 == 0:
-                if (
-                    abs(2 * msg.data[0] - self.maxChargeVoltage)
-                    > 0.15 * self.maxChargeVoltage
-                ):
-                    logging.error(
-                        "Pack voltage of %dV differs significantly from configured max charge voltage %dV.",
-                        msg.data[0],
-                        self.maxChargeVoltage,
-                    )
                 found = found | 1
 
             elif msg.arbitration_id == 0x180 and found & 4 == 0:
@@ -136,42 +118,38 @@ class UbmsBattery(can.Listener):
         if found == 7:
             msg = can.Message(
                 arbitration_id=0x440, data=[0, 2, 0, 0], is_extended_id=False
-            )  # default: drive mode
+            )
             self.cyclicModeTask = self._ci.send_periodic(msg, 1)
-            notifier = can.Notifier(self._ci, [self])
+            self.notifier = can.Notifier(self._ci, [self])
         return found == 7
 
     def _set_operational_filters(self):
-        filters = [
-            {"can_id": 0x0CF, "can_mask": 0xFF0},
-            {"can_id": 0x350, "can_mask": 0xFF0},
-            {"can_id": 0x360, "can_mask": 0xFF0},
-            {"can_id": 0x46A, "can_mask": 0xFF0},
-            {"can_id": 0x06A, "can_mask": 0xFF0},
-            {"can_id": 0x76A, "can_mask": 0xFF0},
-        ]
-        self._ci.set_filters(filters)
+        # No filters for debugging. For production use, restore filters below.
+        # filters = [
+        #     {"can_id": 0x0CF, "can_mask": 0xFF0},
+        #     {"can_id": 0x350, "can_mask": 0xFF0},
+        #     {"can_id": 0x360, "can_mask": 0xFF0},
+        #     {"can_id": 0x46A, "can_mask": 0xFF0},
+        #     {"can_id": 0x06A, "can_mask": 0xFF0},
+        #     {"can_id": 0x76A, "can_mask": 0xFF0},
+        # ]
+        # self._ci.set_filters(filters)
+        pass
 
     def on_message_received(self, msg):
-        self.updated = msg.timestamp
+        # Debug print to see all CAN frames
+        print(f"CAN RX: {msg.arbitration_id:03X} {msg.data.hex()} (dlc={msg.dlc})")
+        self.updated = getattr(msg, "timestamp", 0)
+
         if msg.arbitration_id == 0xC0:
             self.soc = msg.data[0]
             self.mode = msg.data[1]
-            self.state = self.opState[self.mode & 0x3]
+            self.state = self.opState.get(self.mode & 0x3, "unknown")
             self.voltageAndCellTAlarms = msg.data[2]
             self.internalErrors = msg.data[3]
             self.currentAndPcbTAlarms = msg.data[4]
             self.numberOfModulesCommunicating = msg.data[5]
-            if (msg.data[2] & 1 == 0) and (msg.data[3] & 2 == 0):
-                self.numberOfModules = self.numberOfModulesCommunicating
             self.numberOfModulesBalancing = msg.data[6]
-            if (self.shutdownReason == 0 and msg.data[7] != 0) or self.shutdownReason != msg.data[7]:
-                logging.warning("Shutdown reason 0x%x", msg.data[7])
-                logging.debug(
-                    "SOC %d%% mode %d state %s alarms 0x%x 0x%x 0x%x",
-                    self.soc, self.mode, self.state,
-                    self.voltageAndCellTAlarms, self.internalErrors, self.currentAndPcbTAlarms,
-                )
             self.shutdownReason = msg.data[7]
 
         elif msg.arbitration_id == 0xC1:
@@ -179,10 +157,6 @@ class UbmsBattery(can.Listener):
             if (self.mode & 0x2) != 0:
                 self.maxDischargeCurrent = int((struct.unpack("<h", msg.data[3:5])[0]) / 10)
                 self.maxChargeCurrent = int((struct.unpack("<h", bytearray([msg.data[5], msg.data[7]]))[0]) / 10)
-                logging.debug(
-                    "Icmax %dA Idmax %dA", self.maxChargeCurrent, self.maxDischargeCurrent
-                )
-            logging.debug("I: %dA U: %dV", self.current, msg.data[0])
 
         elif msg.arbitration_id == 0xC2:
             if (self.mode & 0x1) != 0:
@@ -199,29 +173,20 @@ class UbmsBattery(can.Listener):
             self.maxPcbTemperature = msg.data[3] - 40
             self.maxCellVoltage = struct.unpack("<h", msg.data[4:6])[0] * 0.001
             self.minCellVoltage = struct.unpack("<h", msg.data[6:8])[0] * 0.001
-            logging.debug(
-                "Umin %1.3fV Umax %1.3fV", self.minCellVoltage, self.maxCellVoltage
-            )
 
-        # Expand cell voltage and module voltage handling for any number of modules
-        elif 0x350 <= msg.arbitration_id < 0x350 + 2 * self.numberOfModules:
+        # Support up to self.numberOfModules, generalize for 16+
+        elif 0x350 <= msg.arbitration_id < 0x350 + self.numberOfModules * 2:
             module = (msg.arbitration_id - 0x350) >> 1
-            if (msg.arbitration_id & 1) == 0:
-                # Even IDs: cell voltages
-                # Defensive: pad with zeros if not enough data
+            if module < self.numberOfModules and (msg.arbitration_id & 1) == 0:
+                # Even IDs: cell voltages (4x 2 bytes, big endian)
                 try:
                     self.cellVoltages[module] = struct.unpack(">4H", msg.data[:8])
                 except Exception:
                     self.cellVoltages[module] = (0, 0, 0, 0)
-            else:
-                # Odd IDs: Not used in all firmwares, handle as needed
-                pass
-            self.moduleVoltage[module] = sum(self.cellVoltages[module])
-            logging.debug("Umodule %d: %fmV", module, self.moduleVoltage[module])
-            if module == self.numberOfModules - 1:
-                self.voltage = sum(self.moduleVoltage[:self.modulesInSeries]) / 1000.0
+                self.moduleVoltage[module] = sum(self.cellVoltages[module])
+            # Odd IDs: firmware-specific, not always used
 
-        elif 0x46A <= msg.arbitration_id < 0x46A + self.numberOfModules:
+        elif 0x46A <= msg.arbitration_id < 0x46A + (self.numberOfModules // 3 + 1):
             iStart = (msg.arbitration_id - 0x46A) * 3
             fmt = ">" + "h" * int((msg.dlc - 2) / 2)
             mCurrent = struct.unpack(fmt, msg.data[2 : msg.dlc])
@@ -229,7 +194,7 @@ class UbmsBattery(can.Listener):
                 if (iStart + idx) < len(self.moduleCurrent):
                     self.moduleCurrent[iStart + idx] = val
 
-        elif 0x6A <= msg.arbitration_id < 0x6A + self.numberOfModules:
+        elif 0x6A <= msg.arbitration_id < 0x6A + (self.numberOfModules // 7 + 1):
             iStart = (msg.arbitration_id - 0x6A) * 7
             fmt = "B" * (msg.dlc - 1)
             mSoc = struct.unpack(fmt, msg.data[1 : msg.dlc])
@@ -237,9 +202,10 @@ class UbmsBattery(can.Listener):
                 if (iStart + idx) < len(self.moduleSoc):
                     self.moduleSoc[iStart + idx] = (m * 100) >> 8
 
-        elif 0x76A <= msg.arbitration_id < 0x76A + self.numberOfModules:
+        elif 0x76A <= msg.arbitration_id < 0x76A + (self.numberOfModules // 3 + 1):
             iStart = (msg.arbitration_id - 0x76A) * 3
-            self.moduleTemp[iStart] = ((msg.data[2] * 256) + msg.data[3]) * 0.01
+            if (iStart) < len(self.moduleTemp):
+                self.moduleTemp[iStart] = ((msg.data[2] * 256) + msg.data[3]) * 0.01
             if msg.dlc > 5 and (iStart + 1) < len(self.moduleTemp):
                 self.moduleTemp[iStart + 1] = ((msg.data[4] * 256) + msg.data[5]) * 0.01
             if msg.dlc > 7 and (iStart + 2) < len(self.moduleTemp):
@@ -249,24 +215,37 @@ class UbmsBattery(can.Listener):
         if not mode in [0, 1, 2]:
             logging.warning("Invalid mode requested %s " % str(mode))
             return False
-        if not isinstance(self.cyclicModeTask, can.ModifiableCyclicTaskABC):
-            msg = can.Message(arbitration_id=0x440, data=[0, mode, 0, 0], extended_id=False)
-            self.cyclicModeTask.modify(msg)
-        else:
-            self.cyclicModeTask.stop()
-            msg = can.Message(arbitration_id=0x440, data=[0, mode, 0, 0], extended_id=False)
-            self.cyclicModeTask = self._ci.send_periodic(msg, 1)
+        if hasattr(self, "cyclicModeTask") and self.cyclicModeTask:
+            try:
+                self.cyclicModeTask.stop()
+            except Exception:
+                pass
+        msg = can.Message(arbitration_id=0x440, data=[0, mode, 0, 0], extended_id=False)
+        self.cyclicModeTask = self._ci.send_periodic(msg, 1)
         logging.info("Changed mode to %s" % self.opModes[mode])
         return True
 
-# === All code below is to simply run it from the commandline for debugging purposes ===
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--capacity", type=int, default=650)
+    parser.add_argument("--voltage", type=float, default=29.0)
+    parser.add_argument("--connection", type=str, default="can0")
+    parser.add_argument("--modules", type=int, default=16)
+    parser.add_argument("--strings", type=int, default=4)
+    args = parser.parse_args()
+
     logging.basicConfig(format="%(levelname)-8s %(message)s", level=(logging.DEBUG))
-    bat = UbmsBattery(capacity=650, voltage=29.0, connection="can0", numberOfModules=16, numberOfStrings=4)
+    bat = UbmsBattery(
+        capacity=args.capacity,
+        voltage=args.voltage,
+        connection=args.connection,
+        numberOfModules=args.modules,
+        numberOfStrings=args.strings
+    )
     listeners = [bat]
     notifier = can.Notifier(bat._ci, listeners)
 
-    # print out some info about the BMS
+    # Print BMS info and per-module data for debugging
     logging.info("BMS type: %d", bat.bms_type)
     logging.info("Firmware version: %d", bat.firmwareVersion)
     logging.info("Hardware version: %d", bat.hw_rev)
@@ -279,8 +258,10 @@ def main():
     logging.info("Pack SOC: %d%%", bat.soc)
     logging.info("Cell voltages and module SOCs:")
     for i in range(bat.numberOfModules):
-        logging.info("Module %d: Cell Voltages: %s, Module Voltage: %s mV, Module SOC: %s%%",
-            i, bat.cellVoltages[i], bat.moduleVoltage[i], bat.moduleSoc[i])
+        logging.info(
+            "Module %d: Cell Voltages: %s, Module Voltage: %s mV, Module SOC: %s%%",
+            i, bat.cellVoltages[i], bat.moduleVoltage[i], bat.moduleSoc[i]
+        )
 
     notifier.stop()
     bat._ci.shutdown()
