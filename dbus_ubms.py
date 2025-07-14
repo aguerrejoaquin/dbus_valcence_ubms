@@ -6,15 +6,17 @@ import time
 import struct
 import argparse
 import os
+import sys
 import dbus
 import dbus.service
 import dbus.mainloop.glib
 from gi.repository import GLib
 
-# Venus OS D-Bus path format
-SERVICE_NAME = 'com.victronenergy.battery.can'
-OBJECT_PATH = '/com/victronenergy/battery/can'
+# Use Venus OS conventions for D-Bus service and object path (for CAN0 interface)
+SERVICE_NAME = 'com.victronenergy.battery.socketcan_can0'
+OBJECT_PATH = '/com/victronenergy/battery/socketcan_can0'
 
+# --- CAN Battery Reader ---
 class UbmsBattery(can.Listener):
     def __init__(self, voltage, capacity, connection, numberOfModules=16, numberOfStrings=4):
         self.capacity = capacity
@@ -29,6 +31,9 @@ class UbmsBattery(can.Listener):
         self.voltage = 0.0
         self.current = 0.0
         self.soc = 0
+        self.serial = "VALENCE-UBMS"
+        self.product_name = "Valence U-BMS"
+        self.last_update = time.time()
 
         logging.info("Created a socket")
         try:
@@ -64,30 +69,14 @@ class UbmsBattery(can.Listener):
                 logging.error("No messages on canbus %s received. Check connection and speed setting.", connection)
                 break
 
-            logging.debug("Handshake: Received CAN frame 0x%X: %s", msg.arbitration_id, msg.data.hex())
-
             if msg.arbitration_id == 0xC0 and found & 2 == 0:
-                logging.info("Found Valence U-BMS on %s in mode %x with %i modules communicating.",
-                             connection, msg.data[1], msg.data[5])
                 found = found | 2
 
             elif msg.arbitration_id == 0xC1 and found & 1 == 0:
-                raw_voltage = msg.data[0]
-                try:
-                    raw_voltage_val = float(raw_voltage)
-                except Exception:
-                    raw_voltage_val = 0.0
-                if abs(2 * raw_voltage_val - self.maxChargeVoltage) > 0.15 * self.maxChargeVoltage:
-                    logging.error("Pack voltage of %dV differs significantly from configured max charge voltage %dV.",
-                                  raw_voltage_val, self.maxChargeVoltage)
                 found = found | 1
 
             elif msg.arbitration_id == 0x180 and found & 4 == 0:
-                self.firmwareVersion = msg.data[0]
-                self.bms_type = msg.data[3]
-                self.hw_rev = msg.data[4]
-                logging.info("U-BMS type %d with firmware version %d",
-                             self.bms_type, self.firmwareVersion)
+                found = found | 4
 
         if found != 7:
             logging.warning("Handshake not complete, but continuing for debug.")
@@ -99,9 +88,9 @@ class UbmsBattery(can.Listener):
         self.on_message_received(msg)
 
     def on_message_received(self, msg):
+        self.last_update = time.time()
         if msg.arbitration_id == 0xC0:
             self.soc = msg.data[0]
-
         elif msg.arbitration_id == 0xC1:
             try:
                 self.current = struct.unpack("Bb", msg.data[0:2])[1]
@@ -151,47 +140,78 @@ class UbmsBattery(can.Listener):
             except Exception:
                 pass
 
-class DbusService(dbus.service.Object):
+    def get_voltage(self):
+        # Sum of module voltages, or fallback to cell voltages
+        if any(self.moduleVoltage):
+            return sum(self.moduleVoltage)
+        elif self.cellVoltages and any(self.cellVoltages[0]):
+            return sum([sum(cells) for cells in self.cellVoltages if cells])
+        return 0.0
+
+    def get_current(self):
+        return self.current
+
+    def get_soc(self):
+        return self.soc
+
+    def get_module_temps(self):
+        return self.moduleTemp
+
+    def get_serial(self):
+        return self.serial
+
+    def get_product_name(self):
+        return self.product_name
+
+# --- Venus D-Bus Exporter ---
+class DbusVenusService(dbus.service.Object):
     def __init__(self, bus, battery, service_name, object_path):
-        super().__init__(bus, object_path)
+        dbus.service.Object.__init__(self, bus, object_path)
         self.battery = battery
         self.service_name = service_name
         self.bus = bus
-        self.last_update = 0
-        self.properties = {
-            'Soc': 0,
-            'Current': 0,
-            'Voltage': 0,
-            'ModuleTemps': [0]*battery.numberOfModules,
-            'ModuleVoltages': [0]*battery.numberOfModules,
-            'ModuleSocs': [0]*battery.numberOfModules
+        self.paths = {
+            '/Mgmt/ProcessName': os.path.basename(sys.argv[0]),
+            '/Mgmt/ProcessVersion': '1.0',
+            '/ProductId': 0,
+            '/ProductName': self.battery.get_product_name(),
+            '/Serial': self.battery.get_serial(),
+            '/Dc/0/Voltage': 0.0,
+            '/Dc/0/Current': 0.0,
+            '/Dc/0/Power': 0.0,
+            '/Soc': 0,
+            '/Capacity': self.battery.capacity,
+            '/NrOfModules': self.battery.numberOfModules,
+            '/NrOfCellsPerModule': 4,
+            '/System/NrOfModulesPerString': int(self.battery.numberOfModules / self.battery.numberOfStrings),
+            '/System/NrOfStrings': self.battery.numberOfStrings,
         }
-        # Register the service on the bus
         bus.request_name(service_name)
 
     @dbus.service.method(dbus.PROPERTIES_IFACE,
                         in_signature='ss', out_signature='v')
     def Get(self, interface_name, property_name):
-        return self.properties.get(property_name, 0)
+        return self.paths.get(property_name, 0)
 
     @dbus.service.method(dbus.PROPERTIES_IFACE,
                         in_signature='ssv', out_signature='')
     def Set(self, interface_name, property_name, value):
-        self.properties[property_name] = value
+        self.paths[property_name] = value
 
     @dbus.service.method(dbus.PROPERTIES_IFACE,
                         in_signature='s', out_signature='a{sv}')
     def GetAll(self, interface_name):
-        return self.properties
+        return self.paths
 
     def update(self):
-        # Update D-Bus properties from battery object
-        self.properties['Soc'] = self.battery.soc
-        self.properties['Current'] = self.battery.current
-        self.properties['Voltage'] = sum(self.battery.moduleVoltage)
-        self.properties['ModuleTemps'] = self.battery.moduleTemp[:]
-        self.properties['ModuleVoltages'] = self.battery.moduleVoltage[:]
-        self.properties['ModuleSocs'] = self.battery.moduleSoc[:]
+        voltage = self.battery.get_voltage()
+        current = self.battery.get_current()
+        soc = self.battery.get_soc()
+        self.paths['/Dc/0/Voltage'] = voltage
+        self.paths['/Dc/0/Current'] = current
+        self.paths['/Dc/0/Power'] = voltage * current
+        self.paths['/Soc'] = soc
+        # Optionally add module temperatures, voltages etc. in custom paths
 
 def main():
     parser = argparse.ArgumentParser(description="dbus_ubms.py (Venus OS service)")
@@ -217,18 +237,14 @@ def main():
         numberOfStrings=args.strings,
     )
 
-    # Service and object path
-    service = DbusService(bus, bat, SERVICE_NAME, OBJECT_PATH)
+    service = DbusVenusService(bus, bat, SERVICE_NAME, OBJECT_PATH)
 
     def periodic_update():
         service.update()
         return True  # Continue repeating
 
-    # Call update every 2 seconds
     GLib.timeout_add_seconds(2, periodic_update)
-    logging.info("Service running. Exporting D-Bus battery info every 2 seconds.")
-
-    # Start main loop
+    logging.info(f"Venus OS dbus-ubms service running as {SERVICE_NAME} at {OBJECT_PATH}.")
     try:
         GLib.MainLoop().run()
     except KeyboardInterrupt:
