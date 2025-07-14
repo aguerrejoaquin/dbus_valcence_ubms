@@ -95,6 +95,12 @@ class DbusUbmsService(dbus.service.Object):
         for p in self.dynamic_paths:
             self.add_path(p, 0)
 
+        # Add dynamic paths for each module's SOC
+        for i in range(self.battery.numberOfModules):
+            path = f'/Module/{i}/Soc'
+            self.add_path(path, 0)
+            self.dynamic_paths.append(path)
+
         # GLib Timer for updates
         GLib.timeout_add(1000, self._update)
 
@@ -158,6 +164,8 @@ class DbusUbmsService(dbus.service.Object):
         log.info(f"MinCellT={min_t}C, MaxCellT={max_t}C")
         for alarm_path, alarm_val in alarms.items():
             log.info(f"Alarm {alarm_path}: {'ON' if alarm_val else 'OFF'}")
+        for i, msoc in enumerate(self.battery.moduleSoc):
+            log.info(f"Module {i} SOC: {msoc}%")
 
         # --- Publish to D-Bus ---
         self.set_dbus_value('/Dc/0/Voltage', v)
@@ -173,6 +181,9 @@ class DbusUbmsService(dbus.service.Object):
         self.set_dbus_value('/System/MaxCellTemperatureCellId', max_tid)
         for path, value in alarms.items():
             self.set_dbus_value(path, value)
+        # Publish each module's SOC
+        for i, msoc in enumerate(self.battery.moduleSoc):
+            self.set_dbus_value(f'/Module/{i}/Soc', msoc)
 
         return True  # Continue timer
 
