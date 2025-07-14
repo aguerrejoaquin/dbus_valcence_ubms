@@ -19,13 +19,12 @@ from datetime import datetime
 
 from ubmsbattery import UbmsBattery
 
-# our own packages
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService  # noqa: E402
 from ve_utils import exit_on_error  # noqa: E402
 from settingsdevice import SettingsDevice  # noqa: E402
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 def handle_changed_setting(setting, oldvalue, newvalue):
     logging.debug(
@@ -41,12 +40,18 @@ class DbusBatteryService:
         capacity,
         productname="Valence U-BMS",
         connection="can0",
+        modules=16,
+        strings=4
     ):
         self.minUpdateDone = 0
         self.dailyResetDone = 0
         self.lastUpdated = 0
         self._bat = UbmsBattery(
-            capacity=capacity, voltage=voltage, connection=connection
+            capacity=capacity,
+            voltage=voltage,
+            connection=connection,
+            numberOfModules=modules,
+            numberOfStrings=strings
         )
 
         try:
@@ -93,21 +98,21 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Alarms/LowTemperature", 0)
         self._dbusservice.add_path("/Alarms/HighTemperature", 0)
         self._dbusservice.add_path("/Alarms/InternalFailure", 0)
-        self._dbusservice.add_path("/Alarms/HighChargeCurrent", 0)
-        self._dbusservice.add_path("/Alarms/HighDischargeCurrent", 0)
         self._dbusservice.add_path("/Balancing", 0)
         self._dbusservice.add_path("/System/HasTemperature", 1)
-        self._dbusservice.add_path("/System/NrOfBatteries", getattr(self._bat, "numberOfModules", 1))
-        self._dbusservice.add_path("/System/NrOfModulesOnline", getattr(self._bat, "numberOfModules", 1))
+        self._dbusservice.add_path("/System/NrOfBatteries", modules)
+        self._dbusservice.add_path("/System/NrOfModulesOnline", modules)
         self._dbusservice.add_path("/System/NrOfModulesOffline", 0)
         self._dbusservice.add_path("/System/NrOfModulesBlockingDischarge", 0)
         self._dbusservice.add_path("/System/NrOfModulesBlockingCharge", 0)
         self._dbusservice.add_path("/System/NrOfBatteriesBalancing", 0)
-        self._dbusservice.add_path("/System/BatteriesParallel", getattr(self._bat, "numberOfStrings", 1))
+        self._dbusservice.add_path("/System/BatteriesParallel", strings)
         self._dbusservice.add_path("/System/BatteriesSeries", getattr(self._bat, "modulesInSeries", 1))
         self._dbusservice.add_path("/System/NrOfCellsPerBattery", getattr(self._bat, "cellsPerModule", 4))
-        self._dbusservice.add_path("/System/MinVoltageCellId", "M1C1")
-        self._dbusservice.add_path("/System/MaxVoltageCellId", "M1C1")
+
+        # Battery cell voltage/temp location/values
+        self._dbusservice.add_path("/System/MinCellVoltageId", "M1C1")
+        self._dbusservice.add_path("/System/MaxCellVoltageId", "M1C1")
         self._dbusservice.add_path("/System/MinCellVoltage", 0.0)
         self._dbusservice.add_path("/System/MaxCellVoltage", 0.0)
         self._dbusservice.add_path("/System/MinCellTemperature", 0.0)
@@ -115,13 +120,16 @@ class DbusBatteryService:
         self._dbusservice.add_path("/System/MaxCellTemperature", 0.0)
         self._dbusservice.add_path("/System/MaxCellTemperatureId", "M1C1")
         self._dbusservice.add_path("/System/MaxPcbTemperature", 0.0)
+
+        # Core battery stats
         self._dbusservice.add_path("/Dc/0/Voltage", 0.0)
         self._dbusservice.add_path("/Dc/0/Current", 0.0)
         self._dbusservice.add_path("/Dc/0/Power", 0.0)
+        self._dbusservice.add_path("/Dc/0/Temperature", 0.0)
         self._dbusservice.add_path("/Soc", 0)
 
         # Per-cell voltages
-        cells_total = getattr(self._bat, "cellsPerModule", 4) * getattr(self._bat, "numberOfModules", 1)
+        cells_total = getattr(self._bat, "cellsPerModule", 4) * modules
         for i in range(1, cells_total + 1):
             self._dbusservice.add_path(f"/Voltages/Cell{i}", 0.0)
             self._dbusservice.add_path(f"/Balances/Cell{i}", 0.0)
@@ -149,7 +157,7 @@ class DbusBatteryService:
             self._dbusservice[path] = value
 
     def _update(self):
-        # Update battery connection status
+        # Connection status
         self._dbusservice["/Connected"] = 1 if getattr(self._bat, "updated", 0) != -1 else 0
 
         # Alarms
@@ -164,7 +172,7 @@ class DbusBatteryService:
         self._dbusservice["/Alarms/HighChargeCurrent"] = int(getattr(self._bat, "current", 0) > getattr(self._bat, "maxChargeCurrent", 1000))
         self._dbusservice["/Alarms/HighDischargeCurrent"] = int(getattr(self._bat, "current", 0) < -getattr(self._bat, "maxDischargeCurrent", 1000))
 
-        # Basic stats
+        # Battery stats
         self._dbusservice["/Soc"] = getattr(self._bat, "soc", 0)
         self._dbusservice["/State"] = getattr(self._bat, "state", 14)
         self._dbusservice["/Mode"] = getattr(self._bat, "mode", 1)
@@ -185,6 +193,7 @@ class DbusBatteryService:
 
         # Per-cell voltages
         flatVList = []
+        cells_per_module = getattr(self._bat, "cellsPerModule", 4)
         if hasattr(self._bat, "cellVoltages"):
             chain = itertools.chain(*getattr(self._bat, "cellVoltages", [[]]))
             flatVList = list(chain)
@@ -202,20 +211,20 @@ class DbusBatteryService:
         # Min/Max Cell Voltage and ID
         if flatVList:
             index_max = flatVList.index(max(flatVList))
-            m_max = math.floor(index_max / getattr(self._bat, "cellsPerModule", 4))
-            c_max = index_max % getattr(self._bat, "cellsPerModule", 4)
-            self._dbusservice["/System/MaxVoltageCellId"] = f"M{m_max+1}C{c_max+1}"
+            m_max = math.floor(index_max / cells_per_module)
+            c_max = index_max % cells_per_module
+            self._dbusservice["/System/MaxCellVoltageId"] = f"M{m_max+1}C{c_max+1}"
             self._dbusservice["/System/MaxCellVoltage"] = max(flatVList) / 1000.0
 
             index_min = flatVList.index(min(flatVList))
-            m_min = math.floor(index_min / getattr(self._bat, "cellsPerModule", 4))
-            c_min = index_min % getattr(self._bat, "cellsPerModule", 4)
-            self._dbusservice["/System/MinVoltageCellId"] = f"M{m_min+1}C{c_min+1}"
+            m_min = math.floor(index_min / cells_per_module)
+            c_min = index_min % cells_per_module
+            self._dbusservice["/System/MinCellVoltageId"] = f"M{m_min+1}C{c_min+1}"
             self._dbusservice["/System/MinCellVoltage"] = min(flatVList) / 1000.0
         else:
-            self._dbusservice["/System/MaxVoltageCellId"] = "M1C1"
+            self._dbusservice["/System/MaxCellVoltageId"] = "M1C1"
             self._dbusservice["/System/MaxCellVoltage"] = 0.0
-            self._dbusservice["/System/MinVoltageCellId"] = "M1C1"
+            self._dbusservice["/System/MinCellVoltageId"] = "M1C1"
             self._dbusservice["/System/MinCellVoltage"] = 0.0
 
         # Min/Max Cell Temperature and ID
@@ -227,10 +236,10 @@ class DbusBatteryService:
             max_temp = max(flatTList)
             min_temp_index = flatTList.index(min_temp)
             max_temp_index = flatTList.index(max_temp)
-            m_min = math.floor(min_temp_index / getattr(self._bat, "cellsPerModule", 4))
-            c_min = min_temp_index % getattr(self._bat, "cellsPerModule", 4)
-            m_max = math.floor(max_temp_index / getattr(self._bat, "cellsPerModule", 4))
-            c_max = max_temp_index % getattr(self._bat, "cellsPerModule", 4)
+            m_min = math.floor(min_temp_index / cells_per_module)
+            c_min = min_temp_index % cells_per_module
+            m_max = math.floor(max_temp_index / cells_per_module)
+            c_max = max_temp_index % cells_per_module
             self._dbusservice["/System/MinCellTemperature"] = min_temp
             self._dbusservice["/System/MaxCellTemperature"] = max_temp
             self._dbusservice["/System/MinCellTemperatureId"] = f"M{m_min+1}C{c_min+1}"
@@ -274,9 +283,12 @@ def main():
     parser.add_argument(
         "-d", "--debug", help="enable debug logging", action="store_true"
     )
-    parser.add_argument("-i", "--interface", help="CAN interface")
-    parser.add_argument("-c", "--capacity", help="capacity in Ah")
-    parser.add_argument("-v", "--voltage", help="maximum charge voltage V")
+    parser.add_argument("-i", "--interface", help="CAN interface", default="can0")
+    parser.add_argument("-c", "--capacity", help="capacity in Ah", default=130)
+    parser.add_argument("-v", "--voltage", help="maximum charge voltage V", required=True)
+    parser.add_argument("--modules", type=int, default=16, help="number of modules")
+    parser.add_argument("--strings", type=int, default=4, help="number of strings")
+    parser.add_argument("--deviceinstance", type=int, default=0, help="device instance")
     parser.add_argument("-p", "--print", help="print only")
 
     args = parser.parse_args()
@@ -286,33 +298,22 @@ def main():
         level=(logging.DEBUG if args.debug else logging.INFO),
     )
 
-    if not args.interface:
-        logging.info("No CAN interface specified, using default can0")
-        args.interface = "can0"
-
-    if not args.capacity:
-        logging.warning("Battery capacity not specified, using default (130Ah)")
-        args.capacity = 130
-
-    if not args.voltage:
-        logging.error("Maximum charge voltage not specified. Exiting.")
-        return
-
-    os.system("ip link set can0 type can bitrate 250000")
-    os.system("ifconfig can0 up")
+    os.system(f"ip link set {args.interface} type can bitrate 250000")
+    os.system(f"ifconfig {args.interface} up")
 
     logging.info("Starting dbus_ubms %s on %s " % (VERSION, args.interface))
 
     from dbus.mainloop.glib import DBusGMainLoop
-
     DBusGMainLoop(set_as_default=True)
 
     DbusBatteryService(
         servicename="com.victronenergy.battery",
         connection=args.interface,
-        deviceinstance=0,
+        deviceinstance=args.deviceinstance,
         capacity=int(args.capacity),
         voltage=float(args.voltage),
+        modules=args.modules,
+        strings=args.strings,
     )
 
     logging.debug(
