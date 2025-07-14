@@ -6,7 +6,7 @@ with robust debug output and compatible with argument structure and data access 
 shown in your provided files. Publishes both to /Dc/0/Voltage and /Dc/Battery/Voltage.
 Now correctly publishes min/max cell location to /System/MinVoltageCellId and /System/MaxVoltageCellId,
 and min/max temperature location to /System/MinTemperatureCellId and /System/MaxTemperatureCellId
-(for Venus OS compatibility).
+(for Venus OS compatibility). Alarms now published and compatible with Venus OS.
 """
 
 import platform
@@ -28,7 +28,7 @@ sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService
 from ve_utils import exit_on_error
 
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 
 class DbusBatteryService:
     def __init__(
@@ -89,6 +89,15 @@ class DbusBatteryService:
         # Venus OS-compatible cell temperature location paths
         self._dbusservice.add_path("/System/MinTemperatureCellId", "M1C1")
         self._dbusservice.add_path("/System/MaxTemperatureCellId", "M1C1")
+        # Alarm paths for Venus OS
+        self._dbusservice.add_path("/Alarms/CellImbalance", 0)
+        self._dbusservice.add_path("/Alarms/LowVoltage", 0)
+        self._dbusservice.add_path("/Alarms/HighVoltage", 0)
+        self._dbusservice.add_path("/Alarms/HighDischargeCurrent", 0)
+        self._dbusservice.add_path("/Alarms/HighChargeCurrent", 0)
+        self._dbusservice.add_path("/Alarms/LowSoc", 0)
+        self._dbusservice.add_path("/Alarms/LowTemperature", 0)
+        self._dbusservice.add_path("/Alarms/HighTemperature", 0)
         self._dbusservice.register()
         GLib.timeout_add(1000, exit_on_error, self._update)
 
@@ -139,7 +148,7 @@ class DbusBatteryService:
             min_temp_cell_id = f"M{min_module}C{min_cell}"
             max_temp_cell_id = f"M{max_module}C{max_cell}"
 
-        # Debug output for cell locations
+        # Debug output for cell locations and alarms
         print(f"[DEBUG] UbmsBattery.get_pack_voltage() = {voltage} (type={type(voltage)})")
         print(f"[DEBUG] UbmsBattery.current = {current}")
         print(f"[DEBUG] UbmsBattery.maxCellTemperature = {temperature}")
@@ -153,6 +162,7 @@ class DbusBatteryService:
         print(f"[DEBUG] Publishing /System/MinTemperatureCellId = {min_temp_cell_id} (type={type(min_temp_cell_id)})")
         print(f"[DEBUG] Publishing /System/MaxTemperatureCellId = {max_temp_cell_id} (type={type(max_temp_cell_id)})")
 
+        # Main battery stats
         self._dbusservice["/Dc/0/Voltage"] = float(voltage)
         self._dbusservice["/Dc/Battery/Voltage"] = float(voltage)
         self._dbusservice["/Dc/0/Current"] = float(current)
@@ -175,6 +185,26 @@ class DbusBatteryService:
         # Publish all cell voltages
         for i, v in enumerate(cell_voltages):
             self._dbusservice[f"/Voltages/Cell{i+1}"] = float(v) / 1000.0 if v else 0.0
+
+        # --- Alarm publishing logic ---
+        deltaCellVoltage = self._bat.maxCellVoltage - self._bat.minCellVoltage
+        if deltaCellVoltage > 0.25:
+            self._dbusservice["/Alarms/CellImbalance"] = 2
+        elif deltaCellVoltage >= 0.18:
+            self._dbusservice["/Alarms/CellImbalance"] = 1
+        else:
+            self._dbusservice["/Alarms/CellImbalance"] = 0
+
+        self._dbusservice["/Alarms/LowVoltage"] = (self._bat.voltageAndCellTAlarms & 0x10) >> 4
+        self._dbusservice["/Alarms/HighVoltage"] = (self._bat.voltageAndCellTAlarms & 0x20) >> 5
+        self._dbusservice["/Alarms/HighDischargeCurrent"] = (self._bat.currentAndPcbTAlarms & 0x3)
+        self._dbusservice["/Alarms/HighChargeCurrent"] = (self._bat.currentAndPcbTAlarms & 0xC) >> 2
+        self._dbusservice["/Alarms/LowSoc"] = (self._bat.voltageAndCellTAlarms & 0x08) >> 3
+        self._dbusservice["/Alarms/LowTemperature"] = (self._bat.mode & 0x60) >> 5
+        self._dbusservice["/Alarms/HighTemperature"] = ((self._bat.voltageAndCellTAlarms & 0x6) >> 1) | ((self._bat.currentAndPcbTAlarms & 0x18) >> 3)
+
+        # Debug alarms
+        print(f"[DEBUG] Alarms: CellImbalance={self._dbusservice['/Alarms/CellImbalance']}, LowVoltage={self._dbusservice['/Alarms/LowVoltage']}, HighVoltage={self._dbusservice['/Alarms/HighVoltage']}, HighDischargeCurrent={self._dbusservice['/Alarms/HighDischargeCurrent']}, HighChargeCurrent={self._dbusservice['/Alarms/HighChargeCurrent']}, LowSoc={self._dbusservice['/Alarms/LowSoc']}, LowTemperature={self._dbusservice['/Alarms/LowTemperature']}, HighTemperature={self._dbusservice['/Alarms/HighTemperature']}")
 
         return True
 
