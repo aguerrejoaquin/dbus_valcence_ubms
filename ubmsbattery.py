@@ -94,9 +94,10 @@ class UbmsBattery(can.Listener):
             self.minCellVoltage = struct.unpack("<h", msg.data[6:8])[0] * 0.001
         elif 0x350 <= msg.arbitration_id < 0x350 + self.numberOfModules * 2:
             module = (msg.arbitration_id - 0x350) >> 1
-            if module < self.numberOfModules and (msg.arbitration_id & 1) == 0:
+            # Fix: skip first byte (module id), then read 4x2 bytes for cell voltages
+            if module < self.numberOfModules and (msg.arbitration_id & 1) == 0 and len(msg.data) >= 9:
                 try:
-                    self.cellVoltages[module] = struct.unpack(">4H", msg.data[:8])
+                    self.cellVoltages[module] = struct.unpack(">4H", msg.data[1:9])
                 except Exception:
                     self.cellVoltages[module] = (0, 0, 0, 0)
                 self.moduleVoltage[module] = sum(self.cellVoltages[module])
