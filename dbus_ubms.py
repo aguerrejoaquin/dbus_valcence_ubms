@@ -24,7 +24,7 @@ from vedbus import VeDbusService  # noqa: E402
 from ve_utils import exit_on_error  # noqa: E402
 from settingsdevice import SettingsDevice  # noqa: E402
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 
 def handle_changed_setting(setting, oldvalue, newvalue):
     logging.debug(
@@ -121,10 +121,9 @@ class DbusBatteryService:
         self._dbusservice.add_path("/System/MaxPcbTemperature", 0.0)
 
         # Core battery stats
-        self._dbusservice.add_path("/Dc/0/Voltage", 0.0)
+        self._dbusservice.add_path("/Dc/0/Voltage", 0.0)  # Only once!
         self._dbusservice.add_path("/Dc/0/Current", 0.0)
         self._dbusservice.add_path("/Dc/0/Power", 0.0)
-        # Only add_path for /Dc/0/Temperature ONCE to avoid KeyError!
         self._dbusservice.add_path("/Dc/0/Temperature", 0.0)
         self._dbusservice.add_path("/Soc", 0)
 
@@ -177,8 +176,17 @@ class DbusBatteryService:
         self._dbusservice["/State"] = getattr(self._bat, "state", 14)
         self._dbusservice["/Mode"] = getattr(self._bat, "mode", 1)
 
-        # Voltage, Current, Power, Temp (use assignment, NOT add_path)
-        voltage = getattr(self._bat, "voltage", 0.0)
+        # -- PATCH: Use correct pack voltage attribute if available --
+        voltage = getattr(self._bat, "pack_voltage", None)
+        if voltage is None:
+            voltage = getattr(self._bat, "voltage", None)
+        if voltage is None:
+            voltage = getattr(self._bat, "total_voltage", None)
+        if voltage is None:
+            voltage = 0.0
+        # Debug print for diagnosis
+        print(f"DEBUG: pack_voltage={getattr(self._bat, 'pack_voltage', 'N/A')} voltage={getattr(self._bat, 'voltage', 'N/A')} total_voltage={getattr(self._bat, 'total_voltage', 'N/A')}")
+
         current = getattr(self._bat, "current", 0.0)
         temperature = getattr(self._bat, "maxCellTemperature", 0.0)
         self._dbusservice["/Dc/0/Voltage"] = voltage
