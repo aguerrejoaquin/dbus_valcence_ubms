@@ -4,6 +4,9 @@
 Put a battery service on the dbus, according to Victron standards, with constantly updating paths.
 Adapted for 16 modules and 4 strings on can0 for Venus OS compatibility.
 """
+from gi.repository import GLib
+import dbus.mainloop.glib
+dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
 from gi.repository import GLib
 import platform
