@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
 
-"""
-Data acquisition and decoding of Valence U-BMS messages on CAN bus.
-To overcome the low resolution of the pack voltage (>=1V), the cell voltages are summed up.
-In order for this to work the first x modules of a xSyP pack should have assigned module IDs 1 to x.
-The BMS should be operated in slave mode, VMU packages are being sent.
-"""
-
 import logging
 import can
 import struct
@@ -16,7 +9,7 @@ class UbmsBattery(can.Listener):
     guiModeKey = {252: 0, 3: 2}
     opState = {0: 14, 1: 9, 2: 9}
 
-    def __init__(self, voltage, capacity, connection, numberOfModules=16, numberOfStrings=4):
+    def __init__(self, voltage, capacity, connection, numberOfModules=8, numberOfStrings=2):
         self.capacity = capacity
         self.maxChargeVoltage = voltage
         self.numberOfModules = int(numberOfModules)
@@ -58,14 +51,12 @@ class UbmsBattery(can.Listener):
         self.updated = -1
         self.cyclicModeTask = None
 
+        logging.info("Created a socket")
         try:
             self._ci = can.interface.Bus(
                 channel=connection,
-                bustype="socketcan",
-                can_filters=[
-                    {"can_id": 0x0CF, "can_mask": 0xFF0},
-                    {"can_id": 0x180, "can_mask": 0xFFF},
-                ],
+                bustype="socketcan"
+                # No can_filters for debugging, accept all frames
             )
         except Exception as e:
             logging.error("Failed to initialize CAN interface: %s", str(e))
@@ -88,13 +79,13 @@ class UbmsBattery(can.Listener):
     def _connect_and_verify(self, connection):
         found = 0
         msg = None
-        max_tries = 20
+        max_tries = 50  # Increase tries for slow bus
         tries = 0
 
         while found != 7 and tries < max_tries:
             tries += 1
             try:
-                msg = self._ci.recv(timeout=10)
+                msg = self._ci.recv(timeout=2)
             except can.CanError as e:
                 logging.error("Canbus error: %s", str(e))
                 continue
@@ -106,7 +97,9 @@ class UbmsBattery(can.Listener):
                 )
                 break
 
-            elif msg.arbitration_id == 0xC0 and found & 2 == 0:
+            logging.debug("Handshake: Received CAN frame 0x%X: %s", msg.arbitration_id, msg.data.hex())
+
+            if msg.arbitration_id == 0xC0 and found & 2 == 0:
                 logging.info(
                     "Found Valence U-BMS on %s in mode %x with %i modules communicating.",
                     connection,
@@ -158,6 +151,7 @@ class UbmsBattery(can.Listener):
         return found == 7
 
     def _set_operational_filters(self):
+        # Optionally restrict filters.
         filters = [
             {"can_id": 0x0CF, "can_mask": 0xFF0},
             {"can_id": 0x350, "can_mask": 0xFF0},
@@ -258,11 +252,25 @@ class UbmsBattery(can.Listener):
                             self.voltage = sum(relevant_modules) / 1000.0
                             logging.debug("Pack voltage updated: %.3f V", self.voltage)
                         else:
-                            logging.warning("Some module voltages missing or zero, cannot compute pack voltage.")
+                            missing = [i for i, v in enumerate(relevant_modules) if not v or v == 0]
+                            logging.warning("Some module voltages missing or zero (modules: %s), cannot compute pack voltage.", missing)
                     except Exception as e:
                         logging.error("Failed to compute pack voltage: %s", str(e))
             else:
                 logging.warning("Received CAN data for module %d, which is outside the configured range (0-%d)", module, self.numberOfModules-1)
+
+        # SOC: Handle multiple frames for many modules!
+        elif msg.arbitration_id in range(0x6A, 0x6A + ((self.numberOfModules + 6) // 7)):
+            iStart = (msg.arbitration_id - 0x6A) * 7
+            fmt = "B" * (msg.dlc - 1)
+            try:
+                mSoc = struct.unpack(fmt, msg.data[1 : msg.dlc])
+                for idx, val in enumerate(mSoc):
+                    module_index = iStart + idx
+                    if module_index < self.numberOfModules:
+                        self.moduleSoc[module_index] = (val * 100) >> 8
+            except Exception as e:
+                logging.warning("Error unpacking module SOC: %s", str(e))
 
         elif msg.arbitration_id in [0x46A, 0x46B, 0x46C, 0x46D]:
             iStart = (msg.arbitration_id - 0x46A) * 3
@@ -274,17 +282,6 @@ class UbmsBattery(can.Listener):
                         self.moduleCurrent[iStart + idx] = val
             except Exception as e:
                 logging.warning("Error unpacking module current: %s", str(e))
-
-        elif msg.arbitration_id in [0x6A, 0x6B]:
-            iStart = (msg.arbitration_id - 0x6A) * 7
-            fmt = "B" * (msg.dlc - 1)
-            try:
-                mSoc = struct.unpack(fmt, msg.data[1 : msg.dlc])
-                for idx, val in enumerate(mSoc):
-                    if (iStart + idx) < len(self.moduleSoc):
-                        self.moduleSoc[iStart + idx] = (val * 100) >> 8
-            except Exception as e:
-                logging.warning("Error unpacking module SOC: %s", str(e))
 
         elif msg.arbitration_id in [0x76A, 0x76B, 0x76C, 0x76D]:
             iStart = (msg.arbitration_id - 0x76A) * 3
