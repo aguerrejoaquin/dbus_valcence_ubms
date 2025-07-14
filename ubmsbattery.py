@@ -2,10 +2,10 @@
 
 """
 Data acquisition and decoding of Valence U-BMS messages on CAN bus for debugging.
-This version:
 - Accepts any number of modules and strings (set via command line or defaults to 16/4).
 - Receives all CAN frames (no filters), prints every CAN message.
-- Tries to extract useful data from known frames, but also prints all raw data for reverse engineering.
+- Decodes cell voltages, module voltages, module SOCs.
+- Prints pack voltage as the sum of modules in one string (e.g., for 16 modules and 4 strings, sum modules 0,1,2,3).
 - At the end, prints all module voltages, SOCs, and cell voltages.
 """
 
@@ -108,6 +108,11 @@ class UbmsBattery(can.Listener):
                 if (iStart + idx) < len(self.moduleSoc):
                     self.moduleSoc[iStart + idx] = (m * 100) >> 8
 
+    def get_pack_voltage(self):
+        # Sum only the modules in one string (modules 0,1,2,3 for 16 modules/4 strings)
+        pack_voltage = sum(self.moduleVoltage[:self.modulesInSeries]) / 1000.0
+        return pack_voltage
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--capacity", type=int, default=650)
@@ -138,7 +143,7 @@ def main():
     print("\n------ DEBUG SUMMARY ------")
     logging.info("Number of modules: %d", bat.numberOfModules)
     logging.info("Number of strings: %d", bat.numberOfStrings)
-    logging.info("Pack voltage: %1.3fV", bat.voltage)
+    logging.info("Pack voltage (sum of modules 0-%d): %.3f V", bat.modulesInSeries-1, bat.get_pack_voltage())
     logging.info("Pack current: %dA", bat.current)
     logging.info("Pack SOC: %d%%", bat.soc)
     logging.info("Max cell voltage: %1.3fV", bat.maxCellVoltage)
