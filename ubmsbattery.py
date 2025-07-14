@@ -83,13 +83,11 @@ class UbmsBattery(can.Listener):
             self.minCellVoltage = struct.unpack("<h", msg.data[6:8])[0] * 0.001
         elif 0x350 <= msg.arbitration_id < 0x350 + self.numberOfModules * 2:
             module = (msg.arbitration_id - 0x350) >> 1
-            # Print CAN details for debug
             print(f"0x{msg.arbitration_id:X} module={module} data={msg.data.hex()} len={len(msg.data)}")
             if module < self.numberOfModules and (msg.arbitration_id & 1) == 0:
                 if len(msg.data) >= 7:
-                    c1 = (msg.data[1] << 8) | msg.data[2]
-                    c2 = (msg.data[3] << 8) | msg.data[4]
-                    c3 = (msg.data[5] << 8) | msg.data[6]
+                    # Unpack 3 little-endian unsigned shorts (cell voltages)
+                    c1, c2, c3 = struct.unpack("<3H", msg.data[1:7])
                     self.cellVoltages[module] = (c1, c2, c3, 0)
                     self.moduleVoltage[module] = c1 + c2 + c3
                 else:
