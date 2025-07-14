@@ -14,7 +14,7 @@ from vedbus import VeDbusService
 
 from ubmsbattery import UbmsBattery
 
-VERSION = "1.7.0"
+VERSION = "1.7.0-debug"
 
 class DbusBatteryService:
     def __init__(
@@ -122,6 +122,16 @@ class DbusBatteryService:
         min_cell_temp = getattr(self._bat, "minCellTemperature", 0)
         battery_temp = max_cell_temp if max_cell_temp else (max_cell_temp + min_cell_temp) / 2 if min_cell_temp else 0
 
+        # Debug prints
+        print("========== DBUS UPDATE ==========")
+        print("Pack voltage:", voltage)
+        print("Current:", current)
+        print("SOC:", soc)
+        print("Battery temp (used):", battery_temp)
+        print("max_cell_temp:", max_cell_temp, "min_cell_temp:", min_cell_temp)
+        print("moduleSoC:", getattr(self._bat, "moduleSoc", []))
+        print("moduleTemp:", getattr(self._bat, "moduleTemp", []))
+
         self._dbusservice["/Dc/0/Voltage"] = voltage
         self._dbusservice["/Dc/0/Current"] = current
         self._dbusservice["/Soc"] = soc
@@ -132,6 +142,7 @@ class DbusBatteryService:
         for idx in range(self.numberOfModules):
             soc_mod = self._bat.moduleSoc[idx] if idx < len(self._bat.moduleSoc) else 0
             temp_mod = self._bat.moduleTemp[idx] if idx < len(self._bat.moduleTemp) else battery_temp
+            print(f"Module {idx+1}: SoC={soc_mod} Temp={temp_mod}")
             self._dbusservice[f"/System/Module/{idx+1}/Soc"] = soc_mod
             self._dbusservice[f"/System/Module/{idx+1}/Temperature"] = temp_mod
 
@@ -146,7 +157,6 @@ class DbusBatteryService:
                 if hasattr(self._bat, "cellVoltages") and mod < len(self._bat.cellVoltages) and cell < len(self._bat.cellVoltages[mod]):
                     v = self._bat.cellVoltages[mod][cell] * 0.001
                 if hasattr(self._bat, "cellTemperatures"):
-                    # If you have per-cell temperature
                     try:
                         t = self._bat.cellTemperatures[mod][cell]
                     except Exception:
@@ -154,6 +164,7 @@ class DbusBatteryService:
                 else:
                     t = self._bat.moduleTemp[mod] if mod < len(self._bat.moduleTemp) else battery_temp
 
+                print(f"Cell M{mod+1}C{cell+1}: Voltage={v} Temp={t}")
                 self._dbusservice[f"/System/Cell/{cell_idx+1}/Voltage"] = v
                 self._dbusservice[f"/System/Cell/{cell_idx+1}/Temperature"] = t
                 cell_voltages.append((v, mod + 1, cell + 1))
@@ -166,11 +177,14 @@ class DbusBatteryService:
         if cell_voltages_nonzero:
             min_v, min_mod, min_cell = min(cell_voltages_nonzero, key=lambda x: x[0])
             max_v, max_mod, max_cell = max(cell_voltages_nonzero, key=lambda x: x[0])
+            print(f"Min cell voltage: {min_v} at M{min_mod}C{min_cell}")
+            print(f"Max cell voltage: {max_v} at M{max_mod}C{max_cell}")
             self._dbusservice["/System/MinVoltageCell"] = min_v
             self._dbusservice["/System/MinVoltageCellId"] = f"M{min_mod}C{min_cell}"
             self._dbusservice["/System/MaxVoltageCell"] = max_v
             self._dbusservice["/System/MaxVoltageCellId"] = f"M{max_mod}C{max_cell}"
         else:
+            print("No valid cell voltages found!")
             self._dbusservice["/System/MinVoltageCell"] = 0.0
             self._dbusservice["/System/MinVoltageCellId"] = "M_C_"
             self._dbusservice["/System/MaxVoltageCell"] = 0.0
@@ -179,19 +193,27 @@ class DbusBatteryService:
         if cell_temps_nonzero:
             min_t, min_mod_t, min_cell_t = min(cell_temps_nonzero, key=lambda x: x[0])
             max_t, max_mod_t, max_cell_t = max(cell_temps_nonzero, key=lambda x: x[0])
+            print(f"Min cell temp: {min_t} at M{min_mod_t}C{min_cell_t}")
+            print(f"Max cell temp: {max_t} at M{max_mod_t}C{max_cell_t}")
             self._dbusservice["/System/MinCellTemperature"] = min_t
             self._dbusservice["/System/MinCellTemperatureId"] = f"M{min_mod_t}C{min_cell_t}"
             self._dbusservice["/System/MaxCellTemperature"] = max_t
             self._dbusservice["/System/MaxCellTemperatureId"] = f"M{max_mod_t}C{max_cell_t}"
         else:
+            print("No valid cell temperatures found!")
             self._dbusservice["/System/MinCellTemperature"] = 0.0
             self._dbusservice["/System/MinCellTemperatureId"] = "M_C_"
             self._dbusservice["/System/MaxCellTemperature"] = 0.0
             self._dbusservice["/System/MaxCellTemperatureId"] = "M_C_"
 
-        self._dbusservice["/System/MaxPcbTemperature"] = getattr(self._bat, "maxPcbTemperature", 0.0)
+        print("Alarms:")
+        print("LowVoltage:", int(cell_voltages_nonzero and min_v < 2.5))
+        print("HighVoltage:", int(cell_voltages_nonzero and max_v > 3.65))
+        print("LowTemperature:", int(cell_temps_nonzero and min_t < 5))
+        print("HighTemperature:", int(cell_temps_nonzero and max_t > 60))
+        print("CellImbalance:", int(cell_voltages_nonzero and (max_v - min_v) > 0.08))
 
-        # Alarms (example logic, adapt as needed)
+        self._dbusservice["/System/MaxPcbTemperature"] = getattr(self._bat, "maxPcbTemperature", 0.0)
         self._dbusservice["/Alarms/LowVoltage"] = int(cell_voltages_nonzero and min_v < 2.5)
         self._dbusservice["/Alarms/HighVoltage"] = int(cell_voltages_nonzero and max_v > 3.65)
         self._dbusservice["/Alarms/LowTemperature"] = int(cell_temps_nonzero and min_t < 5)
@@ -200,6 +222,8 @@ class DbusBatteryService:
         self._dbusservice["/Alarms/HighDischargeCurrent"] = 0  # Set real logic if available
         self._dbusservice["/Alarms/HighChargeCurrent"] = 0     # Set real logic if available
         self._dbusservice["/Alarms/LowSoc"] = int(soc < 10)
+
+        print("=================================")
 
         return True  # Continue running
 
