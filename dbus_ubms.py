@@ -7,6 +7,7 @@ shown in your provided files. Publishes both to /Dc/0/Voltage and /Dc/Battery/Vo
 Now correctly publishes min/max cell location to /System/MinVoltageCellId and /System/MaxVoltageCellId,
 and min/max temperature location to /System/MinTemperatureCellId and /System/MaxTemperatureCellId
 (for Venus OS compatibility). Alarms now published and compatible with Venus OS.
+TimeToGo value is calculated and published as well.
 """
 
 import platform
@@ -28,7 +29,7 @@ sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService
 from ve_utils import exit_on_error
 
-VERSION = "2.4.1"
+VERSION = "2.4.2"
 
 class DbusBatteryService:
     def __init__(
@@ -98,6 +99,8 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Alarms/LowSoc", 0)
         self._dbusservice.add_path("/Alarms/LowTemperature", 0)
         self._dbusservice.add_path("/Alarms/HighTemperature", 0)
+        # TimeToGo path
+        self._dbusservice.add_path("/TimeToGo", 0)
         self._dbusservice.register()
         GLib.timeout_add(1000, exit_on_error, self._update)
 
@@ -107,6 +110,7 @@ class DbusBatteryService:
         current = getattr(self._bat, "current", 0.0)
         temperature = getattr(self._bat, "maxCellTemperature", 0.0)
         soc = getattr(self._bat, "soc", 0)
+        capacity = getattr(self._bat, "capacity", 0)
         power = float(voltage) * float(current)
         min_cell_v = getattr(self._bat, "minCellVoltage", 0.0)
         max_cell_v = getattr(self._bat, "maxCellVoltage", 0.0)
@@ -203,8 +207,21 @@ class DbusBatteryService:
         self._dbusservice["/Alarms/LowTemperature"] = (self._bat.mode & 0x60) >> 5
         self._dbusservice["/Alarms/HighTemperature"] = ((self._bat.voltageAndCellTAlarms & 0x6) >> 1) | ((self._bat.currentAndPcbTAlarms & 0x18) >> 3)
 
-        # Debug alarms
         print(f"[DEBUG] Alarms: CellImbalance={self._dbusservice['/Alarms/CellImbalance']}, LowVoltage={self._dbusservice['/Alarms/LowVoltage']}, HighVoltage={self._dbusservice['/Alarms/HighVoltage']}, HighDischargeCurrent={self._dbusservice['/Alarms/HighDischargeCurrent']}, HighChargeCurrent={self._dbusservice['/Alarms/HighChargeCurrent']}, LowSoc={self._dbusservice['/Alarms/LowSoc']}, LowTemperature={self._dbusservice['/Alarms/LowTemperature']}, HighTemperature={self._dbusservice['/Alarms/HighTemperature']}")
+
+        # --- TimeToGo calculation (seconds) ---
+        try:
+            if abs(current) > 0.01:
+                remaining_ah = float(capacity) * (float(soc) / 100.0)
+                time_to_go = int((remaining_ah / abs(current)) * 3600)
+                time_to_go = max(0, min(time_to_go, 999999))
+            else:
+                time_to_go = 0
+        except Exception as e:
+            print(f"[DEBUG] TimeToGo calculation error: {e}")
+            time_to_go = 0
+        self._dbusservice["/TimeToGo"] = time_to_go
+        print(f"[DEBUG] TimeToGo: {time_to_go} seconds")
 
         return True
 
