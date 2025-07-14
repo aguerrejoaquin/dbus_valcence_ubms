@@ -4,6 +4,8 @@ import sys
 import os
 import platform
 import logging
+import itertools
+import math
 from argparse import ArgumentParser
 from gi.repository import GLib
 import dbus.mainloop.glib
@@ -13,11 +15,27 @@ from vedbus import VeDbusService
 
 from ubmsbattery import UbmsBattery
 
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 
 class DbusBatteryService:
-    def __init__(self, servicename, deviceinstance, voltage, capacity, modules=16, strings=4, connection="can0"):
-        self._bat = UbmsBattery(capacity=capacity, voltage=voltage, connection=connection, numberOfModules=modules, numberOfStrings=strings)
+    def __init__(
+        self,
+        servicename,
+        deviceinstance,
+        voltage,
+        capacity,
+        productname="Valence U-BMS",
+        connection="can0",
+        modules=16,
+        strings=4
+    ):
+        self._bat = UbmsBattery(
+            capacity=capacity,
+            voltage=voltage,
+            connection=connection,
+            numberOfModules=modules,
+            numberOfStrings=strings
+        )
         self.modules = modules
         self.strings = strings
         self.cells_per_module = getattr(self._bat, "cellsPerModule", 4)
@@ -34,7 +52,7 @@ class DbusBatteryService:
         # Mandatory objects
         self._dbusservice.add_path("/DeviceInstance", deviceinstance)
         self._dbusservice.add_path("/ProductId", 0)
-        self._dbusservice.add_path("/ProductName", "Valence U-BMS")
+        self._dbusservice.add_path("/ProductName", productname)
         self._dbusservice.add_path("/Manufacturer", "Valence")
         self._dbusservice.add_path("/FirmwareVersion", getattr(self._bat, "firmwareVersion", "1.0"))
         self._dbusservice.add_path("/HardwareVersion", f"type: {getattr(self._bat, 'bms_type', 'UBMS')} rev. {hex(getattr(self._bat, 'hw_rev', 1))}")
@@ -52,23 +70,19 @@ class DbusBatteryService:
         self._dbusservice.add_path("/System/NrOfStrings", strings)
         self._dbusservice.add_path("/System/NrOfModulesPerString", modules // strings)
 
-        # All 8 required Min/Max cell voltage and temperature paths for Victron - IDs are now integers!
-        self._dbusservice.add_path("/System/MinVoltageCell", 0.0)
-        self._dbusservice.add_path("/System/MinVoltageCellId", 1)
-        self._dbusservice.add_path("/System/MaxVoltageCell", 0.0)
-        self._dbusservice.add_path("/System/MaxVoltageCellId", 1)
+        # Correct paths for Victron UI
+        self._dbusservice.add_path("/System/MinCellVoltage", 0.0)
+        self._dbusservice.add_path("/System/MinVoltageCellId", "M1C1")
+        self._dbusservice.add_path("/System/MaxCellVoltage", 0.0)
+        self._dbusservice.add_path("/System/MaxVoltageCellId", "M1C1")
         self._dbusservice.add_path("/System/MinCellTemperature", 0.0)
-        self._dbusservice.add_path("/System/MinCellTemperatureId", 1)
         self._dbusservice.add_path("/System/MaxCellTemperature", 0.0)
-        self._dbusservice.add_path("/System/MaxCellTemperatureId", 1)
-
-        # Real-time values
         self._dbusservice.add_path("/Dc/0/Voltage", 0.0)
         self._dbusservice.add_path("/Dc/0/Current", 0.0)
         self._dbusservice.add_path("/Soc", 0)
         self._dbusservice.add_path("/Dc/0/Power", 0.0)
 
-        # Standard Victron alarm paths
+        # Standard alarms
         self._dbusservice.add_path("/Alarms/LowVoltage", 0)
         self._dbusservice.add_path("/Alarms/HighVoltage", 0)
         self._dbusservice.add_path("/Alarms/LowTemperature", 0)
@@ -77,35 +91,15 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Alarms/HighChargeCurrent", 0)
         self._dbusservice.add_path("/Alarms/HighDischargeCurrent", 0)
 
-        # Extended: custom alarms, errors, balancing, shutdown
-        self._dbusservice.add_path("/Alarms/VoltageAndCellT", 0)
-        self._dbusservice.add_path("/Alarms/CurrentAndPcbT", 0)
-        self._dbusservice.add_path("/Alarms/InternalErrors", 0)
-        self._dbusservice.add_path("/Alarms/ShutdownReason", 0)
-        self._dbusservice.add_path("/Status/Balanced", 1)
-        self._dbusservice.add_path("/Status/ModulesCommunicating", 0)
-        self._dbusservice.add_path("/Status/ModulesBalancing", 0)
-        self._dbusservice.add_path("/Status/ChargeComplete", 0)
-        self._dbusservice.add_path("/Status/MaxPcbTemperature", 0)
-        self._dbusservice.add_path("/Status/PackMaxCellVoltage", 0.0)
-        self._dbusservice.add_path("/Status/PackMinCellVoltage", 0.0)
-        self._dbusservice.add_path("/Status/PackMaxCellTemperature", 0)
-        self._dbusservice.add_path("/Status/PackMinCellTemperature", 0)
-
-        # Per-module voltage, soc, temp
-        for m in range(self.modules):
-            self._dbusservice.add_path(f"/System/Module/{m+1}/Voltage", 0.0)
-            self._dbusservice.add_path(f"/System/Module/{m+1}/Soc", 0)
-            self._dbusservice.add_path(f"/System/Module/{m+1}/Temperature", 0.0)
-            for c in range(self.cells_per_module):
-                cell_idx = m * self.cells_per_module + c + 1
-                self._dbusservice.add_path(f"/System/Cell/{cell_idx}/Voltage", 0.0)
+        # Per-cell voltages as expected by Victron
+        for i in range(1, self.cells_per_module * self.modules + 1):
+            self._dbusservice.add_path(f"/Voltages/Cell{i}", 0.0)
 
         GLib.timeout_add_seconds(1, self.update)
 
     def update(self):
         bat = self._bat
-        pack_voltage = bat.get_pack_voltage() if hasattr(bat, "get_pack_voltage") else 0.0
+        pack_voltage = getattr(bat, "voltage", 0.0)
         pack_current = getattr(bat, "current", 0.0)
         soc = getattr(bat, "soc", 0)
         power = pack_voltage * pack_current
@@ -113,52 +107,48 @@ class DbusBatteryService:
         mode = getattr(bat, "mode", 1)
         max_cell_temp = getattr(bat, "maxCellTemperature", 0)
         min_cell_temp = getattr(bat, "minCellTemperature", 0)
-        max_pcb_temp = getattr(bat, "maxPcbTemperature", 0)
-        voltage_cellt_alarms = getattr(bat, "voltageAndCellTAlarms", 0)
-        current_pcbt_alarms = getattr(bat, "currentAndPcbTAlarms", 0)
         internal_errors = getattr(bat, "internalErrors", 0)
-        shutdown_reason = getattr(bat, "shutdownReason", 0)
-        balanced = int(getattr(bat, "balanced", True))
-        modules_comm = getattr(bat, "numberOfModulesCommunicating", 0)
-        modules_bal = getattr(bat, "numberOfModulesBalancing", 0)
-        charge_complete = getattr(bat, "chargeComplete", 0)
-        pack_max_cell_voltage = getattr(bat, "maxCellVoltage", 0.0)
-        pack_min_cell_voltage = getattr(bat, "minCellVoltage", 0.0)
-        module_voltage = getattr(bat, "moduleVoltage", [0]*self.modules)
-        module_soc = getattr(bat, "moduleSoc", [0]*self.modules)
-        module_temp = getattr(bat, "moduleTemp", [0]*self.modules)
+
         cellVoltages = getattr(bat, "cellVoltages", [])
-        if cellVoltages and isinstance(cellVoltages[0], tuple):
-            cellVoltages = [list(t) for t in cellVoltages]
+        # Flatten cell list
+        flatVList = list(itertools.chain(*cellVoltages)) if cellVoltages else []
+        # Update per-cell voltages
+        for i, v in enumerate(flatVList):
+            voltage = v / 1000.0 if v is not None else 0.0
+            self._dbusservice[f"/Voltages/Cell{i+1}"] = voltage
 
-        # Min/max cell voltage and location (ID is now integer, 1-based index)
-        cell_voltages = []
-        for m, mod in enumerate(cellVoltages):
-            for c, v in enumerate(mod):
-                v_v = v / 1000.0 if v is not None else 0.0
-                cell_idx = m * self.cells_per_module + c + 1  # 1-based index for Victron
-                cell_voltages.append((v_v, cell_idx))
-                self._dbusservice[f"/System/Cell/{cell_idx}/Voltage"] = v_v
-        cell_voltages_nonzero = [x for x in cell_voltages if x[0] > 0]
-        if cell_voltages_nonzero:
-            min_v, min_idx = min(cell_voltages_nonzero, key=lambda x: x[0])
-            max_v, max_idx = max(cell_voltages_nonzero, key=lambda x: x[0])
+        # Find min/max voltage and IDs
+        if flatVList:
+            max_v = max(flatVList) / 1000.0
+            min_v = min(flatVList) / 1000.0
+            max_index = flatVList.index(max(flatVList))
+            min_index = flatVList.index(min(flatVList))
+            m_max = math.floor(max_index / self.cells_per_module)
+            c_max = max_index % self.cells_per_module
+            m_min = math.floor(min_index / self.cells_per_module)
+            c_min = min_index % self.cells_per_module
+            max_id = f"M{m_max+1}C{c_max+1}"
+            min_id = f"M{m_min+1}C{c_min+1}"
         else:
-            min_v = max_v = 0.0
-            min_idx = max_idx = 1
+            max_v = min_v = 0.0
+            max_id = min_id = "M1C1"
 
-        # Min/max cell temperature and location (ID is always 1, since no per-cell temp)
-        min_t = min_cell_temp
-        max_t = max_cell_temp
-        min_temp_id = max_temp_id = 1
+        self._dbusservice["/System/MaxCellVoltage"] = max_v
+        self._dbusservice["/System/MaxVoltageCellId"] = max_id
+        self._dbusservice["/System/MinCellVoltage"] = min_v
+        self._dbusservice["/System/MinVoltageCellId"] = min_id
+        self._dbusservice["/System/MaxCellTemperature"] = max_cell_temp
+        self._dbusservice["/System/MinCellTemperature"] = min_cell_temp
 
-        # Per-module voltage/soc/temp
-        for m in range(self.modules):
-            self._dbusservice[f"/System/Module/{m+1}/Voltage"] = module_voltage[m] / 1000.0 if m < len(module_voltage) else 0.0
-            self._dbusservice[f"/System/Module/{m+1}/Soc"] = module_soc[m] if m < len(module_soc) else 0
-            self._dbusservice[f"/System/Module/{m+1}/Temperature"] = module_temp[m] if m < len(module_temp) else 0.0
+        # D-Bus core
+        self._dbusservice["/Dc/0/Voltage"] = pack_voltage
+        self._dbusservice["/Dc/0/Current"] = pack_current
+        self._dbusservice["/Soc"] = soc
+        self._dbusservice["/Dc/0/Power"] = power
+        self._dbusservice["/State"] = state
+        self._dbusservice["/Mode"] = mode
 
-        # Standard Venus OS alarms
+        # Alarms (example thresholds, adjust for your battery)
         self._dbusservice["/Alarms/LowVoltage"] = 1 if pack_voltage < 44 else 0
         self._dbusservice["/Alarms/HighVoltage"] = 1 if pack_voltage > 58 else 0
         self._dbusservice["/Alarms/LowTemperature"] = 1 if min_cell_temp < 0 else 0
@@ -167,46 +157,11 @@ class DbusBatteryService:
         self._dbusservice["/Alarms/HighChargeCurrent"] = 1 if abs(pack_current) > getattr(bat, "maxChargeCurrent", 1000) else 0
         self._dbusservice["/Alarms/HighDischargeCurrent"] = 0
 
-        # Custom/extended alarm info
-        self._dbusservice["/Alarms/VoltageAndCellT"] = voltage_cellt_alarms
-        self._dbusservice["/Alarms/CurrentAndPcbT"] = current_pcbt_alarms
-        self._dbusservice["/Alarms/InternalErrors"] = internal_errors
-        self._dbusservice["/Alarms/ShutdownReason"] = shutdown_reason
-        self._dbusservice["/Status/Balanced"] = balanced
-        self._dbusservice["/Status/ModulesCommunicating"] = modules_comm
-        self._dbusservice["/Status/ModulesBalancing"] = modules_bal
-        self._dbusservice["/Status/ChargeComplete"] = charge_complete
-        self._dbusservice["/Status/MaxPcbTemperature"] = max_pcb_temp
-        self._dbusservice["/Status/PackMaxCellVoltage"] = pack_max_cell_voltage
-        self._dbusservice["/Status/PackMinCellVoltage"] = pack_min_cell_voltage
-        self._dbusservice["/Status/PackMaxCellTemperature"] = max_cell_temp
-        self._dbusservice["/Status/PackMinCellTemperature"] = min_cell_temp
-
-        # D-Bus core
-        self._dbusservice["/Dc/0/Voltage"] = pack_voltage
-        self._dbusservice["/Dc/0/Current"] = pack_current
-        self._dbusservice["/Soc"] = soc
-        self._dbusservice["/Dc/0/Power"] = power
-        self._dbusservice["/Dc/0/Temperature"] = max_cell_temp
-        self._dbusservice["/State"] = state
-        self._dbusservice["/Mode"] = mode
-
-        # All 8 Min/Max cells/temps required by Victron - IDs are integers!
-        self._dbusservice["/System/MinVoltageCell"] = min_v
-        self._dbusservice["/System/MinVoltageCellId"] = min_idx
-        self._dbusservice["/System/MaxVoltageCell"] = max_v
-        self._dbusservice["/System/MaxVoltageCellId"] = max_idx
-        self._dbusservice["/System/MinCellTemperature"] = min_t
-        self._dbusservice["/System/MinCellTemperatureId"] = min_temp_id
-        self._dbusservice["/System/MaxCellTemperature"] = max_t
-        self._dbusservice["/System/MaxCellTemperatureId"] = max_temp_id
-
         # Debug printout
         print("--- D-BUS PUBLISH ---")
         print(f"PackVoltage: {pack_voltage:.3f} V, PackCurrent: {pack_current} A, SOC: {soc}%, Power: {power:.2f} W")
-        print(f"Min voltage: {min_v:.3f} V Cell: {min_idx} | Max voltage: {max_v:.3f} V Cell: {max_idx}")
-        print(f"Min temp: {min_t}°C Cell: {min_temp_id} | Max temp: {max_t}°C Cell: {max_temp_id}")
-        print(f"Alarms: LV={self._dbusservice['/Alarms/LowVoltage']} HV={self._dbusservice['/Alarms/HighVoltage']} LT={self._dbusservice['/Alarms/LowTemperature']} HT={self._dbusservice['/Alarms/HighTemperature']} Internal={self._dbusservice['/Alarms/InternalFailure']} CC={self._dbusservice['/Alarms/HighChargeCurrent']}")
+        print(f"Min cell voltage: {min_v:.3f} V Cell: {min_id} | Max cell voltage: {max_v:.3f} V Cell: {max_id}")
+        print(f"Min cell temp: {min_cell_temp}°C | Max cell temp: {max_cell_temp}°C")
         print("---------------------")
 
         return True
