@@ -15,7 +15,6 @@ class UbmsBattery(can.Listener):
     opModes = {0: "Standby", 1: "Charge", 2: "Drive"}
     guiModeKey = {252: 0, 3: 2}
     opState = {0: 14, 1: 9, 2: 9}
-    # Victron BMS states documented in your original
 
     def __init__(self, voltage, capacity, connection, numberOfModules=8, numberOfStrings=2):
         self.capacity = capacity
@@ -64,8 +63,8 @@ class UbmsBattery(can.Listener):
                 channel=connection,
                 bustype="socketcan",
                 can_filters=[
-                    {"can_id": 0x0CF, "can_mask": 0xFF0},  # BMS status
-                    {"can_id": 0x180, "can_mask": 0xFFF},  # Firmware version and BMS type
+                    {"can_id": 0x0CF, "can_mask": 0xFF0},
+                    {"can_id": 0x180, "can_mask": 0xFFF},
                 ],
             )
         except Exception as e:
@@ -327,8 +326,6 @@ class UbmsBattery(can.Listener):
         logging.info("Changed mode to %s" % self.opModes[mode])
         return True
 
-import threading
-
 def debug_command_loop(bat):
     print("\nType a command to inspect the battery (commands: soc, volt, temp, all, help, exit):")
     while True:
@@ -367,7 +364,6 @@ def debug_command_loop(bat):
 
 def main():
     import sys
-    import time
     import argparse
 
     logging.basicConfig(format="%(levelname)-8s %(message)s", level=logging.DEBUG)
