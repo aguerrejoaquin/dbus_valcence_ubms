@@ -1,264 +1,559 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
-import sys
-import time
-import logging
+"""
+A class to put a battery service on the dbus, according to victron standards, with constantly updating
+paths.
 
-import dbus
-import dbus.service
-import dbus.mainloop.glib
+"""
 from gi.repository import GLib
+import platform
+import logging
+import sys
+import os
+import dbus
+import itertools
+import math
+
+from time import time
+from datetime import datetime
+from argparse import ArgumentParser
 
 from ubmsbattery import UbmsBattery
 
-try:
-    import RPi.GPIO as GPIO
-    gpio_available = True
-except ImportError:
-    gpio_available = False
 
-log = logging.getLogger("dbus_ubms")
-logging.basicConfig(level=logging.INFO)
+# our own packages
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
+from vedbus import VeDbusService  # noqa: E402
+from ve_utils import exit_on_error  # noqa: E402
+from settingsdevice import SettingsDevice  # noqa: E402
 
-class DbusValue(dbus.service.Object):
-    def __init__(self, bus, path, initial_value=0):
-        dbus.service.Object.__init__(self, bus, path)
-        self._value = initial_value
+VERSION = "1.1.0"
 
-    @dbus.service.method('com.victronenergy.BusItem', in_signature='', out_signature='v')
-    def GetValue(self):
-        return self._value
 
-    @dbus.service.method('com.victronenergy.BusItem', in_signature='v', out_signature='b')
-    def SetValue(self, value):
-        self._value = value
-        self.PropertiesChanged('com.victronenergy.BusItem', {'Value': value}, [])
-        return True
+def handle_changed_setting(setting, oldvalue, newvalue):
+    logging.debug(
+        "setting changed, setting: %s, old: %s, new: %s" % (setting, oldvalue, newvalue)
+    )
 
-    @dbus.service.method('com.victronenergy.BusItem', in_signature='', out_signature='s')
-    def GetText(self):
-        return str(self._value)
 
-    @dbus.service.signal(dbus_interface='com.victronenergy.BusItem', signature='sa{sv}as')
-    def PropertiesChanged(self, interface, changed, invalidated):
-        pass
+class DbusBatteryService:
+    def __init__(
+        self,
+        servicename,
+        deviceinstance,
+        voltage,
+        capacity,
+        productname="Valence U-BMS",
+        connection="can0",
+    ):
+        self.minUpdateDone = 0
+        self.dailyResetDone = 0
+        self.lastUpdated = 0
+        self._bat = UbmsBattery(
+            capacity=capacity, voltage=voltage, connection=connection
+        )
 
-    def set_value(self, value):
-        if self._value != value:
-            self._value = value
-            self.PropertiesChanged('com.victronenergy.BusItem', {'Value': value}, [])
+        try:
+            self._dbusservice = VeDbusService(
+                servicename + ".socketcan_" + connection + "_di" + str(deviceinstance),
+                register=False
+            )
+        except:
+            exit
 
-class DbusUbmsService:
-    def __init__(self, battery, servicename='com.victronenergy.battery.ttyUBMS_Can0', deviceinstance=0, gpio_relay_pin=None):
-        self.battery = battery
-        self.deviceinstance = deviceinstance
-        self.gpio_relay_pin = gpio_relay_pin
-        self.last_alarm_state = False
+        # Create the management objects, as specified in the ccgx dbus-api document
+        self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
+        self._dbusservice.add_path(
+            "/Mgmt/ProcessVersion",
+            VERSION + " running on Python " + platform.python_version(),
+        )
+        self._dbusservice.add_path("/Mgmt/Connection", connection)
 
-        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-        self.bus = dbus.SystemBus()
-        self.name = dbus.service.BusName(servicename, bus=self.bus)
-        self.value_objects = {}
+        # Create the mandatory objects
+        self._dbusservice.add_path("/DeviceInstance", deviceinstance)
+        self._dbusservice.add_path("/ProductId", 0)
+        self._dbusservice.add_path("/ProductName", productname)
+        self._dbusservice.add_path("/Manufacturer", "Valence")
+        self._dbusservice.add_path("/FirmwareVersion", self._bat.firmwareVersion)
+        self._dbusservice.add_path("/HardwareVersion", "type: " + str(self._bat.bms_type) + " rev. "+ hex(self._bat.hw_rev))
+        self._dbusservice.add_path("/Connected", 0)
+        # Create battery specific objects
+        self._dbusservice.add_path("/State", 14, writeable=True)
+        self._dbusservice.add_path("/Mode", 1, writeable=True, onchangecallback=self._transmit_mode) 
+        self._dbusservice.add_path("/Soh", 100)
+        self._dbusservice.add_path("/Capacity", int(capacity))
+        self._dbusservice.add_path("/InstalledCapacity", int(capacity))
+        self._dbusservice.add_path("/Dc/0/Temperature", 25)
+        self._dbusservice.add_path("/Info/MaxChargeCurrent", 0)
+        self._dbusservice.add_path("/Info/MaxDischargeCurrent", 0)
+        self._dbusservice.add_path("/Info/MaxChargeVoltage", float(voltage))
+        self._dbusservice.add_path("/Info/BatteryLowVoltage", 44.8)
+        self._dbusservice.add_path("/Alarms/CellImbalance", 0)
+        self._dbusservice.add_path("/Alarms/LowVoltage", 0)
+        self._dbusservice.add_path("/Alarms/HighVoltage", 0)
+        self._dbusservice.add_path("/Alarms/HighDischargeCurrent", 0)
+        self._dbusservice.add_path("/Alarms/HighChargeCurrent", 0)
+        self._dbusservice.add_path("/Alarms/LowSoc", 0)
+        self._dbusservice.add_path("/Alarms/LowTemperature", 0)
+        self._dbusservice.add_path("/Alarms/HighTemperature", 0)
+        self._dbusservice.add_path("/Balancing", 0)
+        self._dbusservice.add_path("/System/HasTemperature", 1)
+        self._dbusservice.add_path("/System/NrOfBatteries", self._bat.numberOfModules)
+        self._dbusservice.add_path(
+            "/System/NrOfModulesOnline", self._bat.numberOfModules
+        )
+        self._dbusservice.add_path("/System/NrOfModulesOffline", 0)
+        self._dbusservice.add_path("/System/NrOfModulesBlockingDischarge", 0)
+        self._dbusservice.add_path("/System/NrOfModulesBlockingCharge", 0)
+        self._dbusservice.add_path("/System/NrOfBatteriesBalancing", 0)
+        self._dbusservice.add_path(
+            "/System/BatteriesParallel", self._bat.numberOfStrings
+        )
+        self._dbusservice.add_path("/System/BatteriesSeries", self._bat.modulesInSeries)
+        self._dbusservice.add_path(
+            "/System/NrOfCellsPerBattery", self._bat.cellsPerModule
+        )
+        self._dbusservice.add_path("/System/MinVoltageCellId", "M_C_")
+        self._dbusservice.add_path("/System/MaxVoltageCellId", "M_C_")
+        self._dbusservice.add_path("/System/MinCellTemperature", 10.0)
+        self._dbusservice.add_path("/System/MaxCellTemperature", 10.0)
+        self._dbusservice.add_path("/System/MaxPcbTemperature", 10.0)
 
-        # Configurable thresholds
-        self.thresholds = {
-            'min_cell_voltage': 2700,    # mV
-            'max_cell_voltage': 3600,    # mV
-            'cell_imbalance':    50,     # mV
-            'max_cell_temp':     55,     # degC
-            'min_cell_temp':     0,      # degC
-            'max_charge_current': 100,   # A
-            'max_discharge_current': 100,# A
-            'min_soc':           5,      # %
+        BATTERY_CELL_DATA_FORMAT = 1
+
+        if BATTERY_CELL_DATA_FORMAT > 0:
+            for i in range(1, self._bat.cellsPerModule * self._bat.numberOfModules + 1):
+                cellpath = (
+                    "/Cell/%s/Volts"
+                    if (BATTERY_CELL_DATA_FORMAT & 2)
+                    else "/Voltages/Cell%s"
+                )
+                self._dbusservice.add_path(
+                    cellpath % (str(i)),
+                    None,
+                    writeable=True,
+                    gettextcallback=lambda p, v: "{:0.3f}V".format(v),
+                )
+                if BATTERY_CELL_DATA_FORMAT & 1:
+                    self._dbusservice.add_path(
+                        "/Balances/Cell%s" % (str(i)), None, writeable=True
+                    )
+            pathbase = "Cell" if (BATTERY_CELL_DATA_FORMAT & 2) else "Voltages"
+            self._dbusservice.add_path(
+                "/%s/Sum" % pathbase,
+                None,
+                writeable=True,
+                gettextcallback=lambda p, v: "{:2.2f}V".format(v),
+            )
+            self._dbusservice.add_path(
+                "/%s/Diff" % pathbase,
+                None,
+                writeable=True,
+                gettextcallback=lambda p, v: "{:0.3f}V".format(v),
+            )
+
+        self._settings = SettingsDevice(
+            bus=(
+                dbus.SystemBus()
+                if (platform.machine() == "armv7l")
+                else dbus.SessionBus()
+            ),
+            supportedSettings={
+                "AvgDischarge": ["/Settings/Ubms/AvgerageDischarge", 0.0, 0, 0],
+                "TotalAhDrawn": ["/Settings/Ubms/TotalAhDrawn", 0.0, 0, 0],
+                "TimeLastFull": ["/Settings/Ubms/TimeLastFull", 0.0, 0, 0],
+                "MinCellVoltage": ["/Settings/Ubms/MinCellVoltage", 4.0, 2.0, 4.2],
+                "MaxCellVoltage": ["/Settings/Ubms/MaxCellVoltage", 2.0, 2.0, 4.2],
+                "interval": ["/Settings/Ubms/Interval", 50, 50, 200],
+            },
+            eventCallback=handle_changed_setting,
+        )
+
+        self._summeditems = {
+            "/System/MaxCellVoltage": {"gettext": "%.2F V"},
+            "/System/MinCellVoltage": {"gettext": "%.2F V"},
+            "/Dc/0/Voltage": {"gettext": "%.2F V"},
+            "/Dc/0/Current": {"gettext": "%.1F A"},
+            "/Dc/0/Power": {"gettext": "%.0F W"},
+            "/Soc": {"gettext": "%.0F %%"},
+            "/History/TotalAhDrawn": {"gettext": "%.0F Ah"},
+            "/History/DischargedEnergy": {"gettext": "%.2F kWh"},
+            "/History/ChargedEnergy": {"gettext": "%.2F kWh"},
+            "/History/AverageDischarge": {"gettext": "%.2F kWh"},
+            "/TimeToGo": {"gettext": "%.0F s"},
+            "/ConsumedAmphours": {"gettext": "%.1F Ah"},
         }
+        for path in self._summeditems.keys():
+            self._dbusservice.add_path(path, value=None, gettextcallback=self._gettext)
 
-        # GPIO relay support
-        if gpio_available and gpio_relay_pin is not None:
-            GPIO.setwarnings(False)
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(gpio_relay_pin, GPIO.OUT)
-            self.set_relay(False)
+        self._dbusservice["/History/AverageDischarge"] = self._settings["AvgDischarge"]
+        self._dbusservice["/History/TotalAhDrawn"] = self._settings["TotalAhDrawn"]
+        self._dbusservice.add_path("/History/TimeSinceLastFullCharge", 0)
+        self._dbusservice.add_path(
+            "/History/MinCellVoltage", self._settings["MinCellVoltage"]
+        )
+        self._dbusservice.add_path(
+            "/History/MaxCellVoltage", self._settings["MaxCellVoltage"]
+        )
+        self._dbusservice["/ConsumedAmphours"] = 0
 
-        # D-Bus static paths
-        static_paths = {
-            '/Mgmt/ProcessName': 'dbus_ubms',
-            '/Mgmt/ProcessVersion': '1.0',
-            '/DeviceInstance': self.deviceinstance,
-            '/ProductId': 0xA042,
-            '/ProductName': 'Valence U-BMS',
-            '/FirmwareVersion': '1.0',
-            '/HardwareVersion': '1.0',
-            '/Connected': 1,
-            '/Capacity': self.battery.capacity,
-            '/System/NrOfBatteries': 1,
-            '/System/NrOfModules': self.battery.numberOfModules,
-            '/System/NrOfCellsPerModule': self.battery.cellsPerModule,
-            '/System/NrOfCellsPerBattery': self.battery.numberOfModules * self.battery.cellsPerModule,
-            '/ServiceMapping': 'battery',
-        }
-        for p, v in static_paths.items():
-            self.add_value_path(p, v)
+        logging.info(
+            "History cell voltage min: %.3f, max: %.3f, totalAhDrawn: %d",
+            self._settings["MinCellVoltage"],
+            self._settings["MaxCellVoltage"],
+            self._settings["TotalAhDrawn"],
+        )
 
-        # Dynamic paths (updated every second)
-        self.dynamic_paths = [
-            '/Dc/0/Voltage',
-            '/Dc/0/Current',
-            '/Soc',
-            '/System/MinCellVoltage',
-            '/System/MaxCellVoltage',
-            '/System/MinCellVoltageCellId',
-            '/System/MaxCellVoltageCellId',
-            '/System/MinCellTemperature',
-            '/System/MaxCellTemperature',
-            '/System/MinCellTemperatureCellId',
-            '/System/MaxCellTemperatureCellId',
-            '/System/Alarms/CellImbalance',
-            '/System/Alarms/LowCellVoltage',
-            '/System/Alarms/HighCellVoltage',
-            '/System/Alarms/LowSoc',
-            '/System/Alarms/HighChargeCurrent',
-            '/System/Alarms/HighDischargeCurrent',
-            '/System/Alarms/CellTemperature',
-        ]
-        for p in self.dynamic_paths:
-            self.add_value_path(p, 0)
+        self._dbusservice["/History/ChargedEnergy"] = 0
+        self._dbusservice["/History/DischargedEnergy"] = 0
 
-        # Add dynamic paths for each module's SOC
-        for i in range(self.battery.numberOfModules):
-            path = f'/Module/{i}/Soc'
-            self.add_value_path(path, 0)
-            self.dynamic_paths.append(path)
+        self._dbusservice.register()
+        GLib.timeout_add(self._settings["interval"], exit_on_error, self._update)
 
-        # GLib Timer for updates
-        GLib.timeout_add(1000, self._update)
+    def _gettext(self, path, value):
+        item = self._summeditems.get(path)
+        if item is not None:
+            return item["gettext"] % value
+        return str(value)
 
-    def add_value_path(self, path, value):
-        self.value_objects[path] = DbusValue(self.bus, path, value)
+    def _transmit_mode(self, path, value):
+        # translate values coming from GUI/dbus to U-BMS values
+        mode = self._bat.guiModeKey.get(value)
 
-    def set_dbus_value(self, path, value):
-        if path in self.value_objects:
-            self.value_objects[path].set_value(value)
+        if self._bat.set_mode(mode) is True:
+            self._dbusservice[path] = value
 
-    def set_relay(self, state):
-        if gpio_available and self.gpio_relay_pin is not None:
-            GPIO.output(self.gpio_relay_pin, GPIO.HIGH if state else GPIO.LOW)
-            log.info(f"Relay set to {'ON' if state else 'OFF'}")
+    def __del__(self):
+        self._safe_history()
+        logging.info("Stopping dbus_ubms")
+
+    def _safe_history(self):
+        logging.debug("Saving history to localsettings")
+        self._settings["AvgDischarge"] = self._dbusservice["/History/AverageDischarge"]
+        self._settings["TotalAhDrawn"] = self._dbusservice["/History/TotalAhDrawn"]
+        self._settings["MinCellVoltage"] = self._dbusservice["/History/MinCellVoltage"]
+        # self._settings['MaxCellVoltage'] = self._dbusservice['/History/MaxCellVoltage']
+
+    def _daily_stats(self):
+        if self._dbusservice["/History/DischargedEnergy"] == 0:
+            return
+        logging.info(
+            "Updating stats, SOC: %d, Discharged: %.2f, Charged: %.2f ",
+            self._bat.soc,
+            self._dbusservice["/History/DischargedEnergy"],
+            self._dbusservice["/History/ChargedEnergy"],
+        )
+        self._dbusservice["/History/AverageDischarge"] = (
+            6 * self._dbusservice["/History/AverageDischarge"]
+            + self._dbusservice["/History/DischargedEnergy"]
+        ) / 7  # rolling week
+        self._dbusservice["/History/ChargedEnergy"] = 0
+        self._dbusservice["/History/DischargedEnergy"] = 0
+        dt = datetime.now() - datetime.fromtimestamp(
+            float(self._settings["TimeLastFull"])
+        )
+      
+        # estimate SOH by BMS calculated SOC difference to 100% vs consumed amphours to full capacity
+        # only do this if the last full charge was less than 24h ago and SOC < 70%
+        if dt.total_seconds() < 24 * 3600 and self._bat.soc < 70:
+         
+            self._dbusservice["/Soh"] = int(
+                -self._dbusservice["/ConsumedAmphours"] / (100 - self._bat.soc)
+                * self._dbusservice["/InstalledCapacity"]
+            )
+            logging.info(
+                "SOH: %d, Capacity: %d ",
+                self._dbusservice["/Soh"],
+                self._dbusservice["/Capacity"],
+            )
+        self.dailyResetDone = datetime.now().day
 
     def _update(self):
-        # --- Read battery values ---
-        v = float(self.battery.get_pack_voltage())
-        c = float(self.battery.current)
-        soc = float(self.battery.soc)
+        if (self._bat.updated != -1 and self.lastUpdated == 0) or (
+            (self._bat.updated - self.lastUpdated) < 10
+        ):
+            self.lastUpdated = self._bat.updated
+            self._dbusservice["/Connected"] = 1
+        else:
+            self._dbusservice["/Connected"] = 0
 
-        # Prepare min/max cell voltage and temperature, with IDs if possible
-        min_v = min([min(cells) for cells in self.battery.cellVoltages if any(cells)]) if self.battery.cellVoltages else 0
-        max_v = max([max(cells) for cells in self.battery.cellVoltages if any(cells)]) if self.battery.cellVoltages else 0
-        min_id = max_id = (0, 0)
-        for m, cells in enumerate(self.battery.cellVoltages):
-            for cidx, val in enumerate(cells):
-                if val == min_v:
-                    min_id = (m, cidx)
-                if val == max_v:
-                    max_id = (m, cidx)
-        min_t = self.battery.minCellTemperature
-        max_t = self.battery.maxCellTemperature
-        min_tid = max_tid = 0  # Only pack-level available for temperature
+        #       self._dbusservice['/Alarms/CellImbalance'] = (self._bat.internalErrors & 0x20)>>5
+        deltaCellVoltage = self._bat.maxCellVoltage - self._bat.minCellVoltage
 
-        # --- Alarms ---
-        alarms = {
-            '/System/Alarms/LowCellVoltage':   int(min_v < self.thresholds['min_cell_voltage']),
-            '/System/Alarms/HighCellVoltage':  int(max_v > self.thresholds['max_cell_voltage']),
-            '/System/Alarms/CellImbalance':    int((max_v - min_v) > self.thresholds['cell_imbalance']),
-            '/System/Alarms/LowSoc':           int(soc < self.thresholds['min_soc']),
-            '/System/Alarms/HighChargeCurrent':int(c > self.thresholds['max_charge_current']),
-            '/System/Alarms/HighDischargeCurrent': int(abs(c) > self.thresholds['max_discharge_current']),
-            '/System/Alarms/CellTemperature':  int((max_t > self.thresholds['max_cell_temp']) or (min_t < self.thresholds['min_cell_temp'])),
-        }
+        # flag cell imbalance, only log first occurence
+        if deltaCellVoltage > 0.25:
+            self._dbusservice["/Alarms/CellImbalance"] = 2
+            if self._bat.balanced:
+                #                       logging.error("Cell voltage imbalance: %.2fV, SOC: %d, @Module: %d ", deltaCellVoltage, self._bat.soc, self._bat.moduleSoc.index(min(self.moduleSoc)))
+                logging.error(
+                    "Cell voltage imbalance: %.2fV, SOC: %d ",
+                    deltaCellVoltage,
+                    self._bat.soc,
+                )
+                logging.info("SOC: %d ", self._bat.soc)
+            self._bat.balanced = False
+        elif deltaCellVoltage >= 0.18:
+            # warn only if not already balancing (UBMS threshold is 0.15V)
+            if self._bat.numberOfModulesBalancing == 0:
+                self._dbusservice["/Alarms/CellImbalance"] = 1
+            if self._bat.balanced:
+                chain = itertools.chain(*self._bat.cellVoltages)
+                flatVList = list(chain)
+                iMax = flatVList.index(max(flatVList))
+                iMin = flatVList.index(min(flatVList))
+                logging.info(
+                    "Cell voltage imbalance: %.2fV, iMin: %d, iMax %d, SOC: %d ",
+                    deltaCellVoltage,
+                    iMin,
+                    iMax,
+                    self._bat.soc,
+                )
+            self._bat.balanced = False
+        else:
+            self._dbusservice["/Alarms/CellImbalance"] = 0
+            self._bat.balanced = True
 
-        # --- Relay logic: trip relay on any alarm ---
-        alarm_state = any(bool(a) for a in alarms.values())
-        if alarm_state != self.last_alarm_state:
-            self.set_relay(alarm_state)
-            self.last_alarm_state = alarm_state
+        self._dbusservice["/Alarms/LowVoltage"] = (
+            self._bat.voltageAndCellTAlarms & 0x10
+        ) >> 3
+        self._dbusservice["/Alarms/HighVoltage"] = (
+            self._bat.voltageAndCellTAlarms & 0x20
+        ) >> 4
+        self._dbusservice["/Alarms/LowSoc"] = (
+            self._bat.voltageAndCellTAlarms & 0x08
+        ) >> 3
+        self._dbusservice["/Alarms/HighDischargeCurrent"] = (
+            self._bat.currentAndPcbTAlarms & 0x3
+        )
 
-        # --- Debug output ---
-        log.info(f"D-Bus Update: Voltage={v:.2f}V, Current={c}A, SOC={soc}%")
-        log.info(f"MinCellV={min_v}mV (Module,Cell={min_id}), MaxCellV={max_v}mV (Module,Cell={max_id})")
-        log.info(f"MinCellT={min_t}C, MaxCellT={max_t}C")
-        for alarm_path, alarm_val in alarms.items():
-            log.info(f"Alarm {alarm_path}: {'ON' if alarm_val else 'OFF'}")
-        for i, msoc in enumerate(self.battery.moduleSoc):
-            log.info(f"Module {i} SOC: {msoc}%")
+        #       flag high cell temperature alarm and high pcb temperature alarm
+        self._dbusservice["/Alarms/HighTemperature"] = (
+            self._bat.voltageAndCellTAlarms & 0x6
+        ) >> 1 | (self._bat.currentAndPcbTAlarms & 0x18) >> 3
+        self._dbusservice["/Alarms/LowTemperature"] = (self._bat.mode & 0x60) >> 5
 
-        # --- Publish to D-Bus ---
-        self.set_dbus_value('/Dc/0/Voltage', float(v))
-        self.set_dbus_value('/Dc/0/Current', float(c))
-        self.set_dbus_value('/Soc', float(soc))
-        self.set_dbus_value('/System/MinCellVoltage', min_v / 1000.0)
-        self.set_dbus_value('/System/MaxCellVoltage', max_v / 1000.0)
-        self.set_dbus_value('/System/MinCellVoltageCellId', int("%d%02d" % min_id) if min_id[0] >= 0 else 0)
-        self.set_dbus_value('/System/MaxCellVoltageCellId', int("%d%02d" % max_id) if max_id[0] >= 0 else 0)
-        self.set_dbus_value('/System/MinCellTemperature', min_t)
-        self.set_dbus_value('/System/MaxCellTemperature', max_t)
-        self.set_dbus_value('/System/MinCellTemperatureCellId', min_tid)
-        self.set_dbus_value('/System/MaxCellTemperatureCellId', max_tid)
-        for path, value in alarms.items():
-            self.set_dbus_value(path, value)
-        # Publish each module's SOC (as float)
-        for i, msoc in enumerate(self.battery.moduleSoc):
-            self.set_dbus_value(f'/Module/{i}/Soc', float(msoc))
+        self._dbusservice["/Soc"] = self._bat.soc
+        dt = datetime.now() - datetime.fromtimestamp(
+            float(self._settings["TimeLastFull"])
+        )
+        self._dbusservice["/History/TimeSinceLastFullCharge"] = (
+            dt.seconds + dt.days * 24 * 3600
+        )
 
-        return True  # Continue timer
+        if self._bat.soc == 100 or self._bat.chargeComplete:
+            # reset used Amphours to zero
+            self._dbusservice["/ConsumedAmphours"] = 0
+            if (
+                datetime.fromtimestamp(time()).day
+                != datetime.fromtimestamp(float(self._settings["TimeLastFull"])).day
+            ):
+                # and if it is the first time that day also create log entry
+                logging.info(
+                    "Fully charged, Discharged: %.2f, Charged: %.2f ",
+                    self._dbusservice["/History/DischargedEnergy"],
+                    self._dbusservice["/History/ChargedEnergy"],
+                )
+                self._settings["TimeLastFull"] = time()
+
+        self._dbusservice["/State"] = self._bat.state
+        #self._dbusservice["/Mode"] = self._bat.guiModeKey.get(
+        #    (self._bat.mode & 0x3), 252
+        #)
+        self._dbusservice["/Balancing"] = (self._bat.mode & 0x10) >> 4
+        self._dbusservice["/Dc/0/Current"] = self._bat.current
+        self._dbusservice["/Dc/0/Voltage"] = self._bat.voltage
+        power = self._bat.voltage * self._bat.current
+        self._dbusservice["/Dc/0/Power"] = power
+        self._dbusservice["/Dc/0/Temperature"] = self._bat.maxCellTemperature
+
+        # only update the below every 20s to reduce load
+        if datetime.now().second not in [0, 20, 40]:
+            return True
+
+        # estimate available capacity from SOC and installed capacity
+        self._dbusservice["/Capacity"] = int(
+                self._dbusservice["/InstalledCapacity"]
+                * self._bat.soc * 0.01
+        )
+
+        chain = itertools.chain(*self._bat.cellVoltages)
+        flatVList = list(chain)
+
+        index = flatVList.index(max(flatVList))
+        m = math.floor(index / 4)
+        c = index % 4
+        self._dbusservice["/System/MaxVoltageCellId"] = (
+            "M" + str(m + 1) + "C" + str(c + 1)
+        )
+        self._dbusservice["/System/MaxCellVoltage"] = self._bat.maxCellVoltage
+
+        index = flatVList.index(min(flatVList))
+        m = math.floor(index / 4)
+        c = index % 4
+        self._dbusservice["/System/MinVoltageCellId"] = (
+            "M" + str(m + 1) + "C" + str(c + 1)
+        )
+        self._dbusservice["/System/MinCellVoltage"] = self._bat.minCellVoltage
+
+        # cell voltages
+        try:
+            voltageSum = 0
+            for i in range(len(flatVList)):
+                voltage = flatVList[i] / 1000.0
+                cellpath = "/Voltages/Cell%s"
+                self._dbusservice[cellpath % (str(i + 1))] = voltage
+                self._dbusservice["/Balances/Cell%s" % (str(i + 1))] = voltage
+                if voltage and i < self._bat.cellsPerModule * self._bat.modulesInSeries:
+                    voltageSum += voltage
+            self._dbusservice["/Voltages/Sum"] = voltageSum
+            self._dbusservice["/Voltages/Diff"] = (
+                self._bat.maxCellVoltage - self._bat.minCellVoltage
+            )
+        except Exception:
+            pass
+
+        if self._bat.maxCellVoltage > self._dbusservice["/History/MaxCellVoltage"]:
+            self._dbusservice["/History/MaxCellVoltage"] = self._bat.maxCellVoltage
+            logging.debug("New maximum cell voltage: %f", self._bat.maxCellVoltage)
+
+        if 0 < self._bat.minCellVoltage < self._dbusservice["/History/MinCellVoltage"]:
+            self._dbusservice["/History/MinCellVoltage"] = self._bat.minCellVoltage
+            logging.debug("New minimum cell voltage: %f", self._bat.minCellVoltage)
+        self._dbusservice["/System/MinCellTemperature"] = self._bat.minCellTemperature
+        self._dbusservice["/System/MaxCellTemperature"] = self._bat.maxCellTemperature
+        self._dbusservice["/System/MaxPcbTemperature"] = self._bat.maxPcbTemperature
+        self._dbusservice["/Info/MaxChargeCurrent"] = self._bat.maxChargeCurrent
+        self._dbusservice["/Info/MaxDischargeCurrent"] = self._bat.maxDischargeCurrent
+        self._dbusservice["/Info/MaxChargeVoltage"] = self._bat.maxChargeVoltage
+        self._dbusservice["/System/NrOfModulesOnline"] = (
+            self._bat.numberOfModulesCommunicating
+        )
+        self._dbusservice["/System/NrOfModulesOffline"] = (
+            self._bat.numberOfModules - self._bat.numberOfModulesCommunicating
+        )
+        self._dbusservice["/System/NrOfBatteriesBalancing"] = (
+            self._bat.numberOfModulesBalancing
+        )
+
+        # update energy statistics daily at 6:00,
+        if (
+            datetime.now().hour == 6
+            and datetime.now().minute == 0
+            and datetime.now().day != self.dailyResetDone
+        ):
+            self._daily_stats()
+
+        now = datetime.now().time()
+        if now.minute != self.minUpdateDone:
+            self.minUpdateDone = now.minute
+            if self._bat.current > 0:
+                # charging
+                self._dbusservice["/History/ChargedEnergy"] += (
+                    power * 1.666667e-5
+                )  # kWh
+                # calculate time to full, in the absense of a mutex accessing bat.current value might have changed
+                # to 0 after check above, so try to catch a div0
+                try:
+                    self._dbusservice["/TimeToGo"] = (
+                        (100 - self._bat.soc)
+                        * self._bat.capacity
+                        * 36
+                        / self._bat.current
+                    )
+                except:
+                    self._dbusservice["/TimeToGo"] = (
+                        self._bat.soc * self._bat.capacity * 36
+                    )
+            else:
+                # discharging
+                self._dbusservice["/ConsumedAmphours"] += (
+                    self._bat.current * 0.016667
+                )  # Ah
+                self._dbusservice["/History/TotalAhDrawn"] += (
+                    self._bat.current * 0.016667
+                )  # Ah
+                self._dbusservice["/History/DischargedEnergy"] += (
+                    -power * 1.666667e-5
+                )  # kWh
+
+                # calculate time to empty
+                try:
+                    self._dbusservice["/TimeToGo"] = (
+                        self._bat.soc * self._bat.capacity * 36 / (-self._bat.current)
+                    )
+                except:
+                    self._dbusservice["/TimeToGo"] = (
+                        self._bat.soc * self._bat.capacity * 36
+                    )
+
+            self._safe_history()
+
+        return True
+
+
+# === All code below is to simply run it from the commandline for debugging purposes ===
+
+# It will create a dbus service called com.victronenergy.battery
+# To try this on commandline, start this program in one terminal, and try these commands
+# from another terminal:
+# dbus -y com.victronenergy.battery /Soc GetValue
+
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--capacity", type=int, default=650)
-    parser.add_argument("--voltage", type=float, default=29.0)
-    parser.add_argument("--connection", type=str, default="can0")
-    parser.add_argument("--modules", type=int, default=16)
-    parser.add_argument("--strings", type=int, default=4)
-    parser.add_argument("--deviceinstance", type=int, default=0)
-    parser.add_argument("--gpio-relay-pin", type=int, default=None, help="GPIO pin to control relay (BCM numbering)")
-    parser.add_argument("--min_cell_voltage", type=int, default=2700)
-    parser.add_argument("--max_cell_voltage", type=int, default=3600)
-    parser.add_argument("--cell_imbalance", type=int, default=50)
-    parser.add_argument("--max_cell_temp", type=int, default=55)
-    parser.add_argument("--min_cell_temp", type=int, default=0)
-    parser.add_argument("--max_charge_current", type=int, default=100)
-    parser.add_argument("--max_discharge_current", type=int, default=100)
-    parser.add_argument("--min_soc", type=int, default=5)
+    parser = ArgumentParser(description="dbus_ubms", add_help=True)
+    parser.add_argument(
+        "-d", "--debug", help="enable debug logging", action="store_true"
+    )
+    parser.add_argument("-i", "--interface", help="CAN interface")
+    parser.add_argument("-c", "--capacity", help="capacity in Ah")
+    parser.add_argument("-v", "--voltage", help="maximum charge voltage V")
+    parser.add_argument("-p", "--print", help="print only")
+
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
-
-    battery = UbmsBattery(
-        capacity=args.capacity,
-        voltage=args.voltage,
-        connection=args.connection,
-        numberOfModules=args.modules,
-        numberOfStrings=args.strings
+    logging.basicConfig(
+        format="%(levelname)-8s %(message)s",
+        level=(logging.DEBUG if args.debug else logging.INFO),
     )
 
-    service = DbusUbmsService(
-        battery,
-        deviceinstance=args.deviceinstance,
-        gpio_relay_pin=args.gpio_relay_pin
+    if not args.interface:
+        logging.info("No CAN interface specified, using default can0")
+        args.interface = "can0"
+
+    if not args.capacity:
+        logging.warning("Battery capacity not specified, using default (130Ah)")
+        args.capacity = 130
+
+    if not args.voltage:
+        logging.error("Maximum charge voltage not specified. Exiting.")
+        return
+
+    os.system("ip link set can0 type can bitrate 250000")
+    os.system("ifconfig can0 up")
+
+    logging.info("Starting dbus_ubms %s on %s " % (VERSION, args.interface))
+
+    from dbus.mainloop.glib import DBusGMainLoop
+
+    # Have a mainloop, so we can send/receive asynchronous calls to and from dbus
+    if sys.version_info.major == 2:
+        gobject.threads_init()
+    DBusGMainLoop(set_as_default=True)
+
+    DbusBatteryService(
+        servicename="com.victronenergy.battery",
+        connection=args.interface,
+        deviceinstance=0,
+        capacity=int(args.capacity),
+        voltage=float(args.voltage),
     )
 
-    # Override thresholds from args
-    for k in service.thresholds:
-        argval = getattr(args, k, None)
-        if argval is not None:
-            service.thresholds[k] = argval
+    logging.debug(
+        "Connected to dbus, and switching over to GLib.MainLoop() (= event based)"
+    )
+    mainloop = GLib.MainLoop()
+    mainloop.run()
 
-    try:
-        GLib.MainLoop().run()
-    except KeyboardInterrupt:
-        battery.notifier.stop()
-        battery._ci.shutdown()
-        sys.exit(0)
 
 if __name__ == "__main__":
     main()
