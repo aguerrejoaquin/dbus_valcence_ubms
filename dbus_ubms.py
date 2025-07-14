@@ -24,7 +24,7 @@ from vedbus import VeDbusService
 from ve_utils import exit_on_error
 from settingsdevice import SettingsDevice
 
-VERSION = "1.3.5"
+VERSION = "1.3.6"
 
 def safe_getattr(obj, attr, default):
     try:
@@ -189,6 +189,7 @@ class DbusBatteryService:
         # --- PATCH: Import all cell voltages and temperatures, min and max values directly from ubmsbattery ---
         # Pack voltage calculation
         pack_voltage = safe_getattr(self._bat, "voltage", None)
+        debug_voltage_source = "ubmsbattery.voltage"
         if pack_voltage is None or pack_voltage == 0:
             module_voltages = []
             if hasattr(self._bat, "moduleVoltages"):
@@ -199,10 +200,13 @@ class DbusBatteryService:
             modules_in_series = safe_getattr(self._bat, "modulesInSeries", 4)
             if module_voltages and len(module_voltages) >= modules_in_series:
                 pack_voltage = sum(module_voltages[:modules_in_series]) / 1000.0
+                debug_voltage_source = "moduleVoltages[:modules_in_series]"
             elif module_voltages:
                 pack_voltage = sum(module_voltages) / 1000.0
+                debug_voltage_source = "moduleVoltages"
             else:
                 pack_voltage = 0.0
+                debug_voltage_source = "fallback 0.0"
         self._dbusservice["/Dc/0/Voltage"] = float(pack_voltage)
 
         current = safe_getattr(self._bat, "current", 0.0)
@@ -295,7 +299,9 @@ class DbusBatteryService:
         self._dbusservice["/History/MaxCellVoltage"] = self._dbusservice["/System/MaxCellVoltage"]
 
         # Debugging output for diagnostics
-        print(f"[DEBUG] D-Bus /Dc/0/Voltage = {self._dbusservice['/Dc/0/Voltage']}")
+        print(f"[DEBUG] UbmsBattery.voltage: {safe_getattr(self._bat, 'voltage', None)}")
+        print(f"[DEBUG] D-Bus /Dc/0/Voltage = {self._dbusservice['/Dc/0/Voltage']} (type={type(self._dbusservice['/Dc/0/Voltage'])}, source={debug_voltage_source})")
+        print(f"[DEBUG] D-Bus /Dc/0/Current = {self._dbusservice['/Dc/0/Current']}")
         print(f"[DEBUG] D-Bus /Dc/0/Temperature = {self._dbusservice['/Dc/0/Temperature']}")
         print(f"[DEBUG] D-Bus /System/MinCellVoltage = {self._dbusservice['/System/MinCellVoltage']}")
         print(f"[DEBUG] D-Bus /System/MaxCellVoltage = {self._dbusservice['/System/MaxCellVoltage']}")
