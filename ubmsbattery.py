@@ -16,7 +16,7 @@ class UbmsBattery(can.Listener):
         self.numberOfModules = max(numberOfModules, 16)
         self.numberOfStrings = max(numberOfStrings, 4)
         self.modulesInSeries = int(self.numberOfModules / self.numberOfStrings)
-        self.cellsPerModule = 4  # Now we get all 4 voltages!
+        self.cellsPerModule = 4
         self.chargeComplete = 0
         self.soc = 0
         self.mode = 0
@@ -76,6 +76,7 @@ class UbmsBattery(can.Listener):
         elif msg.arbitration_id == 0xC1:
             self.current = struct.unpack("Bb", msg.data[0:2])[1]
         elif msg.arbitration_id == 0xC4:
+            # Pack-level temperatures (degrees C)
             self.maxCellTemperature = msg.data[0] - 40
             self.minCellTemperature = msg.data[1] - 40
             self.maxPcbTemperature = msg.data[3] - 40
@@ -144,6 +145,9 @@ def main():
     logging.info("Pack SOC: %d%%", bat.soc)
     logging.info("Max cell voltage: %1.3fV", bat.maxCellVoltage)
     logging.info("Min cell voltage: %1.3fV", bat.minCellVoltage)
+    logging.info("Max cell temperature: %d°C", bat.maxCellTemperature)
+    logging.info("Min cell temperature: %d°C", bat.minCellTemperature)
+    logging.info("Max PCB temperature: %d°C", bat.maxPcbTemperature)
     logging.info("Cell voltages and module SOCs:")
     for i in range(bat.numberOfModules):
         logging.info(
