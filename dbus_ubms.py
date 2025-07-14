@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 """
-Minimal D-Bus battery service for Victron, publishing voltage and all key stats
-directly from UbmsBattery.
+D-Bus battery service for Victron, publishing all key stats directly from UbmsBattery,
+with robust debug output and publishing to both /Dc/0/Voltage and /Dc/Battery/Voltage.
 """
 
 from gi.repository import GLib
@@ -12,13 +12,14 @@ import sys
 import os
 import dbus
 from argparse import ArgumentParser
+
 from ubmsbattery import UbmsBattery
 
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService
 from ve_utils import exit_on_error
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 class DbusBatteryService:
     def __init__(
@@ -51,42 +52,69 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Capacity", int(capacity))
         self._dbusservice.add_path("/InstalledCapacity", int(capacity))
         self._dbusservice.add_path("/Dc/0/Voltage", 0.0)
+        self._dbusservice.add_path("/Dc/Battery/Voltage", 0.0)  # For Victron compatibility
         self._dbusservice.add_path("/Dc/0/Current", 0.0)
+        self._dbusservice.add_path("/Dc/Battery/Current", 0.0)
         self._dbusservice.add_path("/Dc/0/Temperature", 0.0)
+        self._dbusservice.add_path("/Dc/Battery/Temperature", 0.0)
         self._dbusservice.add_path("/Dc/0/Power", 0.0)
+        self._dbusservice.add_path("/Dc/Battery/Power", 0.0)
         self._dbusservice.add_path("/Soc", 0)
+        self._dbusservice.add_path("/Alarms/CellImbalance", 0)
+        self._dbusservice.add_path("/Alarms/LowVoltage", 0)
+        self._dbusservice.add_path("/Alarms/HighVoltage", 0)
+        self._dbusservice.add_path("/Alarms/HighDischargeCurrent", 0)
+        self._dbusservice.add_path("/Alarms/HighChargeCurrent", 0)
+        self._dbusservice.add_path("/Alarms/LowSoc", 0)
+        self._dbusservice.add_path("/Alarms/LowTemperature", 0)
+        self._dbusservice.add_path("/Alarms/HighTemperature", 0)
+        self._dbusservice.add_path("/Alarms/InternalFailure", 0)
+        self._dbusservice.add_path("/Balancing", 0)
+        self._dbusservice.add_path("/System/HasTemperature", 1)
+        self._dbusservice.add_path("/System/NrOfBatteries", getattr(self._bat, "numberOfModules", 1))
+        self._dbusservice.add_path("/System/NrOfModulesOnline", getattr(self._bat, "numberOfModules", 1))
+        self._dbusservice.add_path("/System/NrOfModulesOffline", 0)
+        self._dbusservice.add_path("/System/NrOfModulesBlockingDischarge", 0)
+        self._dbusservice.add_path("/System/NrOfModulesBlockingCharge", 0)
+        self._dbusservice.add_path("/System/NrOfBatteriesBalancing", 0)
+        self._dbusservice.add_path("/System/BatteriesParallel", getattr(self._bat, "numberOfStrings", 1))
+        self._dbusservice.add_path("/System/BatteriesSeries", getattr(self._bat, "modulesInSeries", 1))
+        self._dbusservice.add_path("/System/NrOfCellsPerBattery", getattr(self._bat, "cellsPerModule", 4))
+        self._dbusservice.add_path("/System/MinCellVoltage", 0.0)
+        self._dbusservice.add_path("/System/MaxCellVoltage", 0.0)
+        self._dbusservice.add_path("/System/MinCellTemperature", 0.0)
+        self._dbusservice.add_path("/System/MaxCellTemperature", 0.0)
+        self._dbusservice.add_path("/System/MaxPcbTemperature", 0.0)
         self._dbusservice.register()
-        # Update every second
         GLib.timeout_add(1000, exit_on_error, self._update)
 
     def _update(self):
-        # Always use UbmsBattery.voltage (which is set in the CAN handler)
-        voltage = getattr(self._bat, "voltage", None)
+        voltage = getattr(self._bat, "voltage", 0.0)
         current = getattr(self._bat, "current", 0.0)
         temperature = getattr(self._bat, "maxCellTemperature", 0.0)
         soc = getattr(self._bat, "soc", 0)
+        power = float(voltage) * float(current)
 
-        # Debug: show what we're publishing
+        # Debug output
         print(f"[DEBUG] UbmsBattery.voltage = {voltage} (type={type(voltage)})")
         print(f"[DEBUG] UbmsBattery.current = {current}")
         print(f"[DEBUG] UbmsBattery.maxCellTemperature = {temperature}")
         print(f"[DEBUG] UbmsBattery.soc = {soc}")
+        print(f"[DEBUG] Published /Dc/0/Voltage = {float(voltage)}")
+        print(f"[DEBUG] Published /Dc/Battery/Voltage = {float(voltage)}")
 
-        # Ensure type is float, otherwise Victron will show zero!
-        try:
-            voltage_f = float(voltage) if voltage is not None else 0.0
-        except Exception as e:
-            logging.error(f"Could not convert voltage to float: {e}")
-            voltage_f = 0.0
-
-        self._dbusservice["/Dc/0/Voltage"] = voltage_f
+        self._dbusservice["/Dc/0/Voltage"] = float(voltage)
+        self._dbusservice["/Dc/Battery/Voltage"] = float(voltage)
         self._dbusservice["/Dc/0/Current"] = float(current)
+        self._dbusservice["/Dc/Battery/Current"] = float(current)
         self._dbusservice["/Dc/0/Temperature"] = float(temperature)
-        self._dbusservice["/Dc/0/Power"] = voltage_f * float(current)
+        self._dbusservice["/Dc/Battery/Temperature"] = float(temperature)
+        self._dbusservice["/Dc/0/Power"] = power
+        self._dbusservice["/Dc/Battery/Power"] = power
         self._dbusservice["/Soc"] = float(soc)
         self._dbusservice["/Connected"] = 1 if getattr(self._bat, "updated", -1) != -1 else 0
 
-        print(f"[DEBUG] Published /Dc/0/Voltage = {self._dbusservice['/Dc/0/Voltage']}")
+        # Add more paths and values as needed for full Victron compatibility
 
         return True
 
