@@ -5,9 +5,18 @@ import can
 import time
 import struct
 import argparse
+import os
+import dbus
+import dbus.service
+import dbus.mainloop.glib
+from gi.repository import GLib
+
+# Venus OS D-Bus path format
+SERVICE_NAME = 'com.victronenergy.battery.can'
+OBJECT_PATH = '/com/victronenergy/battery/can'
 
 class UbmsBattery(can.Listener):
-    def __init__(self, voltage, capacity, connection, numberOfModules=8, numberOfStrings=2):
+    def __init__(self, voltage, capacity, connection, numberOfModules=16, numberOfStrings=4):
         self.capacity = capacity
         self.maxChargeVoltage = voltage
         self.numberOfModules = int(numberOfModules)
@@ -17,7 +26,6 @@ class UbmsBattery(can.Listener):
         self.moduleVoltage = [0 for _ in range(self.numberOfModules)]
         self.cellVoltages = [[] for _ in range(self.numberOfModules)]
         self.moduleTemp = [0 for _ in range(self.numberOfModules)]
-        self.moduleCurrent = [0 for _ in range(self.numberOfModules)]
         self.voltage = 0.0
         self.current = 0.0
         self.soc = 0
@@ -80,7 +88,6 @@ class UbmsBattery(can.Listener):
                 self.hw_rev = msg.data[4]
                 logging.info("U-BMS type %d with firmware version %d",
                              self.bms_type, self.firmwareVersion)
-                found = found | 4
 
         if found != 7:
             logging.warning("Handshake not complete, but continuing for debug.")
@@ -92,45 +99,34 @@ class UbmsBattery(can.Listener):
         self.on_message_received(msg)
 
     def on_message_received(self, msg):
-        logging.debug("CAN frame: 0x%X Data: %s", msg.arbitration_id, msg.data.hex())
-
         if msg.arbitration_id == 0xC0:
             self.soc = msg.data[0]
-            logging.debug("SOC updated: %d", self.soc)
 
         elif msg.arbitration_id == 0xC1:
             try:
                 self.current = struct.unpack("Bb", msg.data[0:2])[1]
-                logging.debug("Current updated: %d", self.current)
-            except Exception as e:
-                logging.warning("Failed to extract current: %s", str(e))
+            except Exception:
+                pass
 
-        # Module voltages: even/odd scheme, all 4 cells per module
         if 0x350 <= msg.arbitration_id <= 0x36F:
             module = (msg.arbitration_id - 0x350) >> 1
             if 0 <= module < self.numberOfModules:
-                if (msg.arbitration_id & 1) == 0:  # even, 3 cells, bytes 2-7
+                if (msg.arbitration_id & 1) == 0:
                     try:
                         cell_vals = list(struct.unpack(">hhh", msg.data[2:8]))
                         self.cellVoltages[module] = cell_vals
-                        logging.debug("Module %d 1st 3 cell voltages: %s", module, cell_vals)
-                    except Exception as e:
-                        logging.warning("Could not unpack 3 cell voltages for module %d: %s", module, str(e))
-                else:  # odd, 1 cell, bytes 2-3
+                    except Exception:
+                        pass
+                else:
                     try:
                         if not self.cellVoltages[module] or len(self.cellVoltages[module]) != 3:
                             self.cellVoltages[module] = [0, 0, 0]
                         cell_val = struct.unpack(">h", msg.data[2:4])[0]
                         self.cellVoltages[module].append(cell_val)
                         self.moduleVoltage[module] = sum(self.cellVoltages[module])
-                        logging.debug(
-                            "Module %d cell voltages: %s, module voltage: %d",
-                            module, self.cellVoltages[module], self.moduleVoltage[module]
-                        )
-                    except Exception as e:
-                        logging.warning("Could not unpack 4th cell voltage for module %d: %s", module, str(e))
+                    except Exception:
+                        pass
 
-        # Module SOC: 0x6A, 0x6B, 0x6C (for up to 16 modules)
         if msg.arbitration_id in range(0x6A, 0x6A + ((self.numberOfModules + 6) // 7)):
             iStart = (msg.arbitration_id - 0x6A) * 7
             fmt = "B" * (msg.dlc - 1)
@@ -140,11 +136,9 @@ class UbmsBattery(can.Listener):
                     module_index = iStart + idx
                     if module_index < self.numberOfModules:
                         self.moduleSoc[module_index] = (val * 100) >> 8
-                        logging.debug("Module %d SOC: %d", module_index, self.moduleSoc[module_index])
-            except Exception as e:
-                logging.warning("Error unpacking module SOC: %s", str(e))
+            except Exception:
+                pass
 
-        # Module temperatures: now supports up to 16 modules (0x76A-0x76F)
         if 0x76A <= msg.arbitration_id <= 0x76F:
             iStart = (msg.arbitration_id - 0x76A) * 3
             try:
@@ -154,23 +148,66 @@ class UbmsBattery(can.Listener):
                     self.moduleTemp[iStart + 1] = ((msg.data[4] * 256) + msg.data[5]) * 0.01
                 if msg.dlc > 7 and (iStart + 2) < len(self.moduleTemp):
                     self.moduleTemp[iStart + 2] = ((msg.data[6] * 256) + msg.data[7]) * 0.01
-                logging.debug("Module temps (starting at %d): %s", iStart, self.moduleTemp[iStart:iStart+3])
-            except Exception as e:
-                logging.warning("Error unpacking module temperature: %s", str(e))
+            except Exception:
+                pass
+
+class DbusService(dbus.service.Object):
+    def __init__(self, bus, battery, service_name, object_path):
+        super().__init__(bus, object_path)
+        self.battery = battery
+        self.service_name = service_name
+        self.bus = bus
+        self.last_update = 0
+        self.properties = {
+            'Soc': 0,
+            'Current': 0,
+            'Voltage': 0,
+            'ModuleTemps': [0]*battery.numberOfModules,
+            'ModuleVoltages': [0]*battery.numberOfModules,
+            'ModuleSocs': [0]*battery.numberOfModules
+        }
+        # Register the service on the bus
+        bus.request_name(service_name)
+
+    @dbus.service.method(dbus.PROPERTIES_IFACE,
+                        in_signature='ss', out_signature='v')
+    def Get(self, interface_name, property_name):
+        return self.properties.get(property_name, 0)
+
+    @dbus.service.method(dbus.PROPERTIES_IFACE,
+                        in_signature='ssv', out_signature='')
+    def Set(self, interface_name, property_name, value):
+        self.properties[property_name] = value
+
+    @dbus.service.method(dbus.PROPERTIES_IFACE,
+                        in_signature='s', out_signature='a{sv}')
+    def GetAll(self, interface_name):
+        return self.properties
+
+    def update(self):
+        # Update D-Bus properties from battery object
+        self.properties['Soc'] = self.battery.soc
+        self.properties['Current'] = self.battery.current
+        self.properties['Voltage'] = sum(self.battery.moduleVoltage)
+        self.properties['ModuleTemps'] = self.battery.moduleTemp[:]
+        self.properties['ModuleVoltages'] = self.battery.moduleVoltage[:]
+        self.properties['ModuleSocs'] = self.battery.moduleSoc[:]
 
 def main():
-    parser = argparse.ArgumentParser(description="dbus_ubms.py debug")
+    parser = argparse.ArgumentParser(description="dbus_ubms.py (Venus OS service)")
     parser.add_argument("--capacity", "-c", type=int, default=650, help="Battery capacity, Ah")
     parser.add_argument("--voltage", "-v", type=float, default=29.0, help="Battery max charge voltage")
     parser.add_argument("--interface", "-i", type=str, default="can0", help="CAN device")
-    parser.add_argument("--modules", type=int, default=8, help="Number of modules")
-    parser.add_argument("--strings", type=int, default=2, help="Number of parallel strings")
+    parser.add_argument("--modules", type=int, default=16, help="Number of modules")
+    parser.add_argument("--strings", type=int, default=4, help="Number of parallel strings")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args()
-
     loglevel = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(format="%(levelname)-8s %(message)s", level=loglevel)
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
 
     bat = UbmsBattery(
         capacity=args.capacity,
@@ -180,15 +217,20 @@ def main():
         numberOfStrings=args.strings,
     )
 
+    # Service and object path
+    service = DbusService(bus, bat, SERVICE_NAME, OBJECT_PATH)
+
+    def periodic_update():
+        service.update()
+        return True  # Continue repeating
+
+    # Call update every 2 seconds
+    GLib.timeout_add_seconds(2, periodic_update)
+    logging.info("Service running. Exporting D-Bus battery info every 2 seconds.")
+
+    # Start main loop
     try:
-        while True:
-            print("\n---- U-BMS State ----")
-            print(f"SOC: {bat.soc}")
-            print(f"Current: {bat.current}")
-            print(f"Module Voltages: {bat.moduleVoltage}")
-            print(f"Module SOCs: {bat.moduleSoc}")
-            print(f"Module Temps: {bat.moduleTemp}")
-            time.sleep(5)
+        GLib.MainLoop().run()
     except KeyboardInterrupt:
         print("Exiting.")
 
