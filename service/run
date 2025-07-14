@@ -4,14 +4,32 @@ set -e
 echo "*** starting dbus-ubms ***"
 echo "DEV: $DEV"
 
-# Uncomment and adjust the CAN interface setup if needed:
-# ip link set can8 down || true
-# ip link set can8 up type can bitrate 250000
+# Optional: Set up CAN interface if not already configured by the system
+# Uncomment and adjust as needed for your hardware
+# ip link set can0 down || true
+# ip link set can0 up type can bitrate 250000
 
-# Ensure Python 3 is used
+# Define Python interpreter and script location
 PYTHON=python3
 SCRIPT="../dbus_ubms.py"
 
-# Redirect stderr to stdout, apply softlimit, and exec the service
+# Adjust these arguments according to your system and battery setup
+CAPACITY=552
+VOLTAGE=58.0
+MODULES=16
+STRINGS=4
+DEVICEINSTANCE=0
+CONNECTION="can0"
+
+# Redirect stderr to stdout
 exec 2>&1
-exec softlimit -d 100000000 -s 1000000 -a 100000000 $PYTHON $SCRIPT -i can0 -v 58 -c 552
+
+# Apply soft memory limits (optional, from your original)
+exec softlimit -d 100000000 -s 1000000 -a 100000000 \
+    $PYTHON $SCRIPT \
+    --capacity $CAPACITY \
+    --voltage $VOLTAGE \
+    --modules $MODULES \
+    --strings $STRINGS \
+    --deviceinstance $DEVICEINSTANCE \
+    --connection $CONNECTION
