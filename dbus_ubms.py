@@ -8,7 +8,7 @@ import dbus.service
 import dbus.mainloop.glib
 from gi.repository import GLib
 
-# Dummy UbmsBattery for illustration; replace with your real class
+# Replace this with your real UbmsBattery implementation!
 class UbmsBattery:
     def __init__(self, interface):
         self.voltage = 0.0
@@ -24,32 +24,51 @@ class UbmsBattery:
         self.numberOfModules = 0
         self.numberOfModulesCommunicating = 0
         self.numberOfModulesBalancing = 0
+        # Add more initialization as needed
 
-    # Implement your CAN parsing/updating logic here
+    def update_from_can(self):
+        # Here you would implement CAN parsing and set the above attributes
+        # For debug/demo, we'll just cycle the voltage
+        import random
+        self.voltage = 52.0 + random.uniform(-1.0, 1.0)
+        self.current = 10.0 + random.uniform(-0.5, 0.5)
+        self.soc = 80.0 + random.uniform(-2.0, 2.0)
+        self.maxCellVoltage = 3.5
+        self.minCellVoltage = 3.3
+        self.cellVoltages = [3.3 + random.uniform(0, 0.2) for _ in range(16)]
+        self.maxCellTemperature = 35.0
+        self.minCellTemperature = 25.0
+        self.state = "charging"
+        self.chargeComplete = False
+        self.numberOfModules = 1
+        self.numberOfModulesCommunicating = 1
+        self.numberOfModulesBalancing = 0
 
-class DbusUbmsService:
-    def __init__(self, battery, deviceinstance):
+class DbusUbmsService(dbus.service.Object):
+    def __init__(self, battery, deviceinstance, servicename):
         self._bat = battery
         self._deviceinstance = deviceinstance
-        self._running = True
+        self._servicename = servicename
 
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         self._bus = dbus.SystemBus()
-        self._servicename = f'com.victronenergy.battery.socketcan_can0_di{deviceinstance}'
-        self._dbusservice = dbus.service.BusName(self._servicename, bus=self._bus)
+        self._bus_name = dbus.service.BusName(self._servicename, bus=self._bus)
 
-        # You would register all D-Bus paths here in a real implementation
+        dbus.service.Object.__init__(self, self._bus_name, '/')
+
+        # Register D-Bus values as properties
         self._values = {
             "/Dc/0/Voltage": 0.0,
             "/Dc/0/Current": 0.0,
             "/Soc": 0.0
         }
 
-        # Timer for regular updates
+        # Start periodic update (every 1 second)
         GLib.timeout_add(1000, self._update)
 
     def _update(self):
         try:
+            self._bat.update_from_can()
             logging.info("=== dbus_ubms Update Start ===")
             logging.info("UbmsBattery.voltage: %s", self._bat.voltage)
             logging.info("UbmsBattery.current: %s", self._bat.current)
@@ -67,23 +86,28 @@ class DbusUbmsService:
         except Exception as e:
             logging.exception("Error while dumping UbmsBattery debug values: %s", e)
 
-        # Assign values to D-Bus (replace with actual D-Bus path setting in your framework)
+        # Assign values to D-Bus (simulate actual publishing)
         try:
-            # Example: set D-Bus paths
             self._values["/Dc/0/Voltage"] = float(self._bat.voltage)
             self._values["/Dc/0/Current"] = float(self._bat.current)
             self._values["/Soc"] = float(self._bat.soc)
-
-            # If you have a D-Bus library that needs explicit notification, do so here
-            # For example: self._dbusservice["/Dc/0/Voltage"] = float(self._bat.voltage)
-
         except Exception as e:
             logging.exception("Error while updating D-Bus values: %s", e)
 
-        return self._running  # True to keep timer running
+        return True  # True to keep timer running
 
-    def stop(self):
-        self._running = False
+    # D-Bus property getter
+    @dbus.service.method(dbus_interface='com.victronenergy.BusItem',
+                         in_signature='', out_signature='v')
+    def GetValue(self):
+        # Simple demo: always return voltage (for /Dc/0/Voltage path)
+        return dbus.Double(self._bat.voltage)
+
+    # D-Bus Introspection (optional, for tools)
+    @dbus.service.method('org.freedesktop.DBus.Introspectable',
+                         in_signature='', out_signature='s')
+    def Introspect(self):
+        return ""
 
 def parse_args():
     parser = argparse.ArgumentParser(description="DBus UBMS Battery Service with Debug Logging")
@@ -99,25 +123,23 @@ def main():
     args = parse_args()
     loglevel = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
-        filename=args.logfile, 
+        filename=args.logfile,
         level=loglevel,
         format='%(asctime)s %(levelname)s: %(message)s'
     )
     logging.info("Starting dbus_ubms.py with args: %s", args)
 
-    # Replace with your real UbmsBattery initialization and CAN logic
     battery = UbmsBattery(args.interface)
 
-    # Service initialization
-    service = DbusUbmsService(battery, args.deviceinstance)
+    servicename = f'com.victronenergy.battery.socketcan_{args.interface}_di{args.deviceinstance}'
+    logging.info("Registering D-Bus service name: %s", servicename)
+    service = DbusUbmsService(battery, args.deviceinstance, servicename)
 
-    # Main event loop
     try:
         loop = GLib.MainLoop()
         loop.run()
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received, stopping service.")
-        service.stop()
         sys.exit(0)
     except Exception as e:
         logging.exception("Unhandled exception: %s", e)
