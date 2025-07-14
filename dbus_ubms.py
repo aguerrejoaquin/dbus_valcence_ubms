@@ -116,6 +116,26 @@ class DbusUbmsService(dbus.service.Object):
     def PropertiesChanged(self, interface, changed, invalidated):
         pass
 
+    # D-Bus Method: GetValue
+    @dbus.service.method('com.victronenergy.BusItem', in_signature='s', out_signature='v')
+    def GetValue(self, path):
+        return self.paths.get(path, 0)
+
+    # D-Bus Method: SetValue (for writable paths, if needed)
+    @dbus.service.method('com.victronenergy.BusItem', in_signature='sv', out_signature='b')
+    def SetValue(self, path, value):
+        if path in self.paths:
+            self.paths[path] = value
+            self.PropertiesChanged('com.victronenergy.BusItem', {path: value}, [])
+            return True
+        return False
+
+    # D-Bus Method: GetText (optional, for completeness)
+    @dbus.service.method('com.victronenergy.BusItem', in_signature='s', out_signature='s')
+    def GetText(self, path):
+        val = self.paths.get(path, "")
+        return str(val)
+
     def set_relay(self, state):
         if gpio_available and self.gpio_relay_pin is not None:
             GPIO.output(self.gpio_relay_pin, GPIO.HIGH if state else GPIO.LOW)
