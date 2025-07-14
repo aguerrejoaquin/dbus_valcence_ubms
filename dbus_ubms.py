@@ -24,7 +24,7 @@ from vedbus import VeDbusService  # noqa: E402
 from ve_utils import exit_on_error  # noqa: E402
 from settingsdevice import SettingsDevice  # noqa: E402
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 
 def handle_changed_setting(setting, oldvalue, newvalue):
     logging.debug(
@@ -176,23 +176,40 @@ class DbusBatteryService:
         self._dbusservice["/State"] = getattr(self._bat, "state", 14)
         self._dbusservice["/Mode"] = getattr(self._bat, "mode", 1)
 
-        # -- PATCH: Use correct pack voltage attribute if available --
-        voltage = getattr(self._bat, "pack_voltage", None)
-        if voltage is None:
-            voltage = getattr(self._bat, "voltage", None)
-        if voltage is None:
-            voltage = getattr(self._bat, "total_voltage", None)
-        if voltage is None:
-            voltage = 0.0
-        # Debug print for diagnosis
-        print(f"DEBUG: pack_voltage={getattr(self._bat, 'pack_voltage', 'N/A')} voltage={getattr(self._bat, 'voltage', 'N/A')} total_voltage={getattr(self._bat, 'total_voltage', 'N/A')}")
+        # --- PATCH: Calculate pack voltage from module voltages ---
+        pack_voltage = None
+        module_voltages = []
+        # Try to get moduleVoltages from UbmsBattery
+        if hasattr(self._bat, "moduleVoltages"):
+            try:
+                module_voltages = [float(v) for v in self._bat.moduleVoltages]
+            except Exception:
+                module_voltages = []
+        # Calculate pack voltage as sum of the modules in series (first 'modulesInSeries' modules)
+        modules_in_series = getattr(self._bat, "modulesInSeries", 4)
+        if module_voltages and len(module_voltages) >= modules_in_series:
+            pack_voltage = sum(module_voltages[:modules_in_series]) / 1000.0
+        else:
+            # fallback: sum all modules
+            if module_voltages:
+                pack_voltage = sum(module_voltages) / 1000.0
+            else:
+                # fallback: use .voltage, .pack_voltage, or .total_voltage
+                pack_voltage = getattr(self._bat, "pack_voltage", None)
+                if pack_voltage is None:
+                    pack_voltage = getattr(self._bat, "voltage", None)
+                if pack_voltage is None:
+                    pack_voltage = getattr(self._bat, "total_voltage", None)
+                if pack_voltage is None:
+                    pack_voltage = 0.0
+        print(f"DEBUG: Calculated pack_voltage = {pack_voltage}")
 
         current = getattr(self._bat, "current", 0.0)
         temperature = getattr(self._bat, "maxCellTemperature", 0.0)
-        self._dbusservice["/Dc/0/Voltage"] = voltage
+        self._dbusservice["/Dc/0/Voltage"] = pack_voltage
         self._dbusservice["/Dc/0/Current"] = current
         self._dbusservice["/Dc/0/Temperature"] = temperature
-        self._dbusservice["/Dc/0/Power"] = voltage * current
+        self._dbusservice["/Dc/0/Power"] = pack_voltage * current
 
         # Capacity calculation
         installed_capacity = float(self._dbusservice["/InstalledCapacity"])
