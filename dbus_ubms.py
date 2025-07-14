@@ -11,6 +11,8 @@ sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService  # noqa: E402
 from ve_utils import exit_on_error  # noqa: E402
 from settingsdevice import SettingsDevice  # noqa: E402
+from dbus.mainloop.glib import DBusGMainLoop   # <-- THIS LINE GOES HERE
+
 
 class UbmsBattery:
     def __init__(self, interface):
