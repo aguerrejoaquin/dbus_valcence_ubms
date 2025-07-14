@@ -14,7 +14,7 @@ from vedbus import VeDbusService
 
 from ubmsbattery import UbmsBattery
 
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 
 class DbusBatteryService:
     def __init__(
@@ -81,6 +81,23 @@ class DbusBatteryService:
                 self._dbusservice.add_path(f"/System/Cell/{cell_idx+1}/Voltage", 0.0)
                 self._dbusservice.add_path(f"/System/Cell/{cell_idx+1}/Temperature", 0.0)
 
+        # Min/Max cell voltage and their locations
+        self._dbusservice.add_path("/System/Cell/MinVoltage", 0.0)
+        self._dbusservice.add_path("/System/Cell/MinVoltageModule", 0)
+        self._dbusservice.add_path("/System/Cell/MinVoltageCell", 0)
+        self._dbusservice.add_path("/System/Cell/MaxVoltage", 0.0)
+        self._dbusservice.add_path("/System/Cell/MaxVoltageModule", 0)
+        self._dbusservice.add_path("/System/Cell/MaxVoltageCell", 0)
+
+        # Alarms and errors
+        self._dbusservice.add_path("/Alarms/LowVoltage", 0)
+        self._dbusservice.add_path("/Alarms/HighVoltage", 0)
+        self._dbusservice.add_path("/Alarms/LowTemperature", 0)
+        self._dbusservice.add_path("/Alarms/HighTemperature", 0)
+        self._dbusservice.add_path("/Alarms/InternalError", 0)
+        self._dbusservice.add_path("/Alarms/CellImbalance", 0)
+        self._dbusservice.add_path("/Alarms/CommunicationError", 0)
+
         GLib.timeout_add_seconds(1, self.update)
 
     # Dummy info for compatibility
@@ -112,6 +129,7 @@ class DbusBatteryService:
             self._dbusservice[f"/System/Module/{idx+1}/Temperature"] = temp
 
         # Per-cell Voltage & dummy Temperature
+        cell_voltages = []
         for mod in range(self.numberOfModules):
             for cell in range(self.cellsPerModule):
                 cell_idx = mod * self.cellsPerModule + cell
@@ -119,10 +137,31 @@ class DbusBatteryService:
                     cell_voltage = self._bat.cellVoltages[mod][cell] * 0.001
                 else:
                     cell_voltage = 0
+                cell_voltages.append((cell_voltage, mod + 1, cell + 1))  # store for min/max
                 self._dbusservice[f"/System/Cell/{cell_idx+1}/Voltage"] = cell_voltage
                 # As you have no per-cell temp, use module temp or 0 as fallback
                 temp = self._bat.moduleTemp[mod] if mod < len(self._bat.moduleTemp) else 0
                 self._dbusservice[f"/System/Cell/{cell_idx+1}/Temperature"] = temp
+
+        # Find min/max cell voltage and their locations
+        min_v, min_mod, min_cell = min(cell_voltages, key=lambda x: x[0]) if cell_voltages else (0, 0, 0)
+        max_v, max_mod, max_cell = max(cell_voltages, key=lambda x: x[0]) if cell_voltages else (0, 0, 0)
+
+        self._dbusservice["/System/Cell/MinVoltage"] = min_v
+        self._dbusservice["/System/Cell/MinVoltageModule"] = min_mod
+        self._dbusservice["/System/Cell/MinVoltageCell"] = min_cell
+        self._dbusservice["/System/Cell/MaxVoltage"] = max_v
+        self._dbusservice["/System/Cell/MaxVoltageModule"] = max_mod
+        self._dbusservice["/System/Cell/MaxVoltageCell"] = max_cell
+
+        # Alarms (example logic, adapt to your protocol as needed)
+        self._dbusservice["/Alarms/LowVoltage"] = int(min_v < 2.5)
+        self._dbusservice["/Alarms/HighVoltage"] = int(max_v > 3.65)
+        self._dbusservice["/Alarms/LowTemperature"] = int(getattr(self._bat, "minCellTemperature", 999) < 5)
+        self._dbusservice["/Alarms/HighTemperature"] = int(getattr(self._bat, "maxCellTemperature", -999) > 60)
+        self._dbusservice["/Alarms/InternalError"] = int(getattr(self._bat, "internalErrors", 0) != 0)
+        self._dbusservice["/Alarms/CellImbalance"] = int((max_v - min_v) > 0.08)
+        self._dbusservice["/Alarms/CommunicationError"] = int(getattr(self._bat, "numberOfModulesCommunicating", self.numberOfModules) < self.numberOfModules)
 
         return True  # Continue running
 
