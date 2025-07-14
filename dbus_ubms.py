@@ -5,6 +5,7 @@ D-Bus battery service for Victron, publishing all stats directly from UbmsBatter
 with robust debug output and compatible with argument structure and data access patterns
 shown in your provided files. Publishes both to /Dc/0/Voltage and /Dc/Battery/Voltage.
 Now correctly publishes min/max cell location to /System/MinCellVoltageId and /System/MaxCellVoltageId.
+Includes extra debug output for cell location values.
 """
 
 import platform
@@ -26,7 +27,7 @@ sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService
 from ve_utils import exit_on_error
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 class DbusBatteryService:
     def __init__(
@@ -116,7 +117,7 @@ class DbusBatteryService:
             min_cell_id = f"M{min_module}C{min_cell}"
             max_cell_id = f"M{max_module}C{max_cell}"
 
-        # Debug output
+        # Debug output for cell locations
         print(f"[DEBUG] UbmsBattery.get_pack_voltage() = {voltage} (type={type(voltage)})")
         print(f"[DEBUG] UbmsBattery.current = {current}")
         print(f"[DEBUG] UbmsBattery.maxCellTemperature = {temperature}")
@@ -124,7 +125,8 @@ class DbusBatteryService:
         print(f"[DEBUG] Published /Dc/0/Voltage = {float(voltage)}")
         print(f"[DEBUG] Published /Dc/Battery/Voltage = {float(voltage)}")
         print(f"[DEBUG] Cell voltages: {cell_voltages}")
-        print(f"[DEBUG] MinCellVoltageId: {min_cell_id}, MaxCellVoltageId: {max_cell_id}")
+        print(f"[DEBUG] Publishing /System/MinCellVoltageId = {min_cell_id} (type={type(min_cell_id)})")
+        print(f"[DEBUG] Publishing /System/MaxCellVoltageId = {max_cell_id} (type={type(max_cell_id)})")
 
         self._dbusservice["/Dc/0/Voltage"] = float(voltage)
         self._dbusservice["/Dc/Battery/Voltage"] = float(voltage)
@@ -136,8 +138,8 @@ class DbusBatteryService:
         self._dbusservice["/Connected"] = 1 if getattr(self._bat, "updated", -1) != -1 else 0
         self._dbusservice["/System/MinCellVoltage"] = float(min_cell_v)
         self._dbusservice["/System/MaxCellVoltage"] = float(max_cell_v)
-        self._dbusservice["/System/MinCellVoltageId"] = min_cell_id
-        self._dbusservice["/System/MaxCellVoltageId"] = max_cell_id
+        self._dbusservice["/System/MinCellVoltageId"] = str(min_cell_id)
+        self._dbusservice["/System/MaxCellVoltageId"] = str(max_cell_id)
         self._dbusservice["/System/MinCellTemperature"] = float(min_cell_t)
         self._dbusservice["/System/MaxCellTemperature"] = float(max_cell_t)
         self._dbusservice["/System/MaxPcbTemperature"] = float(max_pcb_t)
