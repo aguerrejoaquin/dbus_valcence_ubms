@@ -16,7 +16,7 @@ class UbmsBattery(can.Listener):
         self.numberOfModules = max(numberOfModules, 16)
         self.numberOfStrings = max(numberOfStrings, 4)
         self.modulesInSeries = int(self.numberOfModules / self.numberOfStrings)
-        self.cellsPerModule = 4
+        self.cellsPerModule = 3  # Only 3 cells per module with this protocol
         self.chargeComplete = 0
         self.soc = 0
         self.mode = 0
@@ -86,19 +86,15 @@ class UbmsBattery(can.Listener):
             # Print CAN details for debug
             print(f"0x{msg.arbitration_id:X} module={module} data={msg.data.hex()} len={len(msg.data)}")
             if module < self.numberOfModules and (msg.arbitration_id & 1) == 0:
-                if len(msg.data) >= 9:
-                    try:
-                        self.cellVoltages[module] = struct.unpack(">4H", msg.data[1:9])
-                    except Exception:
-                        self.cellVoltages[module] = (0, 0, 0, 0)
-                elif len(msg.data) == 8:
-                    try:
-                        self.cellVoltages[module] = struct.unpack(">3H", msg.data[1:7]) + (0,)
-                    except Exception:
-                        self.cellVoltages[module] = (0, 0, 0, 0)
+                if len(msg.data) >= 7:
+                    c1 = (msg.data[1] << 8) | msg.data[2]
+                    c2 = (msg.data[3] << 8) | msg.data[4]
+                    c3 = (msg.data[5] << 8) | msg.data[6]
+                    self.cellVoltages[module] = (c1, c2, c3, 0)
+                    self.moduleVoltage[module] = c1 + c2 + c3
                 else:
                     self.cellVoltages[module] = (0, 0, 0, 0)
-                self.moduleVoltage[module] = sum(self.cellVoltages[module])
+                    self.moduleVoltage[module] = 0
         elif 0x6A <= msg.arbitration_id < 0x6A + (self.numberOfModules // 7 + 1):
             iStart = (msg.arbitration_id - 0x6A) * 7
             fmt = "B" * (msg.dlc - 1)
