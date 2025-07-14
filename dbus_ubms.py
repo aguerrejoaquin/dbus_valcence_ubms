@@ -7,6 +7,8 @@ shown in your provided files. Publishes both to /Dc/0/Voltage and /Dc/Battery/Vo
 Now correctly publishes min/max cell location to /System/MinVoltageCellId and /System/MaxVoltageCellId,
 and min/max temperature location to /System/MinTemperatureCellId and /System/MaxTemperatureCellId
 (for Venus OS compatibility). Alarms, TimeToGo, Parameters, History, and full module/cell topology and BMS info are published.
+
+Now also publishes each module's SOC to /Custom/ModuleSOC/N and cell voltages to /Custom/ModuleN/CellM for use in custom GUI pages.
 """
 
 import platform
@@ -74,7 +76,7 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Dc/0/Temperature", 0.0)
         self._dbusservice.add_path("/Dc/0/Power", 0.0)
         self._dbusservice.add_path("/Soc", 0)
-        # Cell voltages
+        # Cell voltages (all cells, flat list)
         for i in range(modules * 4):
             self._dbusservice.add_path(f"/Voltages/Cell{i+1}", 0.0)
         self._dbusservice.add_path("/System/MinCellVoltage", 0.0)
@@ -149,6 +151,24 @@ class DbusBatteryService:
         for key, val in self._history.items():
             self._dbusservice.add_path(f"/History/{key}", val)
 
+        # --- Custom: Per-module SOC and cell voltages publishing for GUI use ---
+        self._module_soc_paths = []
+        self._custom_cell_voltage_paths = []
+        module_count = int(getattr(self._bat, "numberOfModules", modules))
+        cells_per_module = int(getattr(self._bat, "cellsPerModule", 4))
+        for midx in range(module_count):
+            # Per-module SOC
+            path = f"/Custom/ModuleSOC/{midx+1}"
+            self._dbusservice.add_path(path, 0.0)
+            self._module_soc_paths.append(path)
+            # Per-module cell voltages
+            cell_paths = []
+            for cidx in range(cells_per_module):
+                cpath = f"/Custom/Module{midx+1}/Cell{cidx+1}"
+                self._dbusservice.add_path(cpath, 0.0)
+                cell_paths.append(cpath)
+            self._custom_cell_voltage_paths.append(cell_paths)
+
         self._dbusservice.register()
         GLib.timeout_add(1000, exit_on_error, self._update)
 
@@ -167,6 +187,7 @@ class DbusBatteryService:
         cell_voltages = list(itertools.chain(*getattr(self._bat, "cellVoltages", [])))
         cell_temperatures = list(itertools.chain(*getattr(self._bat, "cellTemperatures", [])))
         cells_per_module = int(getattr(self._bat, "cellsPerModule", 4))
+        module_count = int(getattr(self._bat, "numberOfModules", 16))
 
         # Min/max cell voltage and temperature locations
         min_voltage_cell_id = "M1C1"
@@ -216,6 +237,30 @@ class DbusBatteryService:
         self._dbusservice["/System/MaxTemperatureCellId"] = str(max_temp_cell_id)
         for i, v in enumerate(cell_voltages):
             self._dbusservice[f"/Voltages/Cell{i+1}"] = float(v) / 1000.0 if v else 0.0
+
+        # --- Per-module SOC publishing ---
+        module_soc_list = getattr(self._bat, "moduleSoc", None)
+        if module_soc_list is not None:
+            for idx, path in enumerate(self._module_soc_paths):
+                try:
+                    self._dbusservice[path] = float(module_soc_list[idx])
+                except (IndexError, ValueError, TypeError):
+                    self._dbusservice[path] = 0.0
+
+        # --- Per-module per-cell voltages publishing ---
+        cell_voltages_matrix = getattr(self._bat, "cellVoltages", None)
+        if cell_voltages_matrix is not None:
+            for midx, cell_paths in enumerate(self._custom_cell_voltage_paths):
+                try:
+                    module_cells = cell_voltages_matrix[midx]
+                    for cidx, cpath in enumerate(cell_paths):
+                        try:
+                            self._dbusservice[cpath] = float(module_cells[cidx]) / 1000.0 if module_cells[cidx] else 0.0
+                        except (IndexError, ValueError, TypeError):
+                            self._dbusservice[cpath] = 0.0
+                except (IndexError, TypeError):
+                    for cpath in cell_paths:
+                        self._dbusservice[cpath] = 0.0
 
         # Alarms
         deltaCellVoltage = self._bat.maxCellVoltage - self._bat.minCellVoltage
