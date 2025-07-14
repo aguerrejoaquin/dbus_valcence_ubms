@@ -9,7 +9,7 @@ import dbus.mainloop.glib
 from argparse import ArgumentParser
 
 # Insert velib_python path before importing VeDbusService
-sys.path.insert(1, os.path.dirname(__file__), "ext/velib_python"))
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext/velib_python"))
 from vedbus import VeDbusService
 
 from ubmsbattery import UbmsBattery
