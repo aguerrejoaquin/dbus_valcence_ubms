@@ -1,192 +1,113 @@
 #!/usr/bin/env python3
 
+"""
+Data acquisition and decoding of Valence U-BMS messages on CAN bus
+Adapted for 16 modules and 4 strings on can0 for Venus OS compatibility.
+"""
+
 import logging
 import can
-import time
 import struct
-import argparse
 
 class UbmsBattery(can.Listener):
-    def __init__(self, voltage, capacity, connection, numberOfModules=16, numberOfStrings=4):
+    opModes = {0: "Standby", 1: "Charge", 2: "Drive"}
+    guiModeKey = {252: 0, 3: 2}
+    opState = {0: 14, 1: 9, 2: 9}
+
+    def __init__(self, voltage, capacity, connection):
         self.capacity = capacity
         self.maxChargeVoltage = voltage
-        self.numberOfModules = int(numberOfModules)
-        self.numberOfStrings = int(numberOfStrings)
+        self.numberOfModules = 16
+        self.numberOfStrings = 4
         self.modulesInSeries = int(self.numberOfModules / self.numberOfStrings)
-        self.moduleSoc = [0 for _ in range(self.numberOfModules)]
-        self.moduleVoltage = [0 for _ in range(self.numberOfModules)]
-        self.cellVoltages = [[] for _ in range(self.numberOfModules)]
-        self.moduleTemp = [0 for _ in range(self.numberOfModules)]
-        self.moduleCurrent = [0 for _ in range(self.numberOfModules)]
-        self.voltage = 0.0
-        self.current = 0.0
+        self.cellsPerModule = 4
+        self.chargeComplete = 0
         self.soc = 0
+        self.mode = 0
+        self.state = ""
+        self.voltage = 0
+        self.current = 0
+        self.temperature = 0
+        self.balanced = True
 
-        logging.info("Created a socket")
-        try:
-            self._ci = can.interface.Bus(
-                channel=connection,
-                bustype="socketcan"
-            )
-        except Exception as e:
-            logging.error("Failed to initialize CAN interface: %s", str(e))
-            raise
+        self.voltageAndCellTAlarms = 0
+        self.internalErrors = 0
+        self.currentAndPcbTAlarms = 0
+        self.shutdownReason = 0
+
+        self.maxPcbTemperature = 0
+        self.maxCellTemperature = 0
+        self.minCellTemperature = 0
+        self.cellVoltages = [(0, 0, 0, 0) for i in range(self.numberOfModules)]
+        self.moduleVoltage = [0 for i in range(self.numberOfModules)]
+        self.moduleCurrent = [0 for i in range(self.numberOfModules)]
+        self.moduleSoc = [0 for i in range(self.numberOfModules)]
+        self.moduleTemp = [0 for i in range(self.numberOfModules)]
+        self.maxCellVoltage = 3.2
+        self.minCellVoltage = 3.2
+        self.maxChargeCurrent = 5.0
+        self.maxDischargeCurrent = 5.0
+        self.partnr = 0
+        self.firmwareVersion = 0
+        self.bms_type = 0
+        self.hw_rev = 0
+        self.numberOfModulesBalancing = 0
+        self.numberOfModulesCommunicating = 0
+        self.updated = -1
+        self.cyclicModeTask = None
+
+        self._ci = can.interface.Bus(
+            channel=connection,
+            bustype="socketcan",
+            can_filters=[
+                {"can_id": 0x0CF, "can_mask": 0xFF0},
+                {"can_id": 0x180, "can_mask": 0xFFF},
+            ],
+        )
 
         if self._connect_and_verify(connection):
-            logging.info("Handshake completed, switching to normal operation.")
-            self.notifier = can.Notifier(self._ci, [self])
-        else:
-            logging.error("Failed to connect to a supported Valence U-BMS (continuing anyway for debug)")
-            self.notifier = can.Notifier(self._ci, [self])
+            pass
 
     def _connect_and_verify(self, connection):
-        found = 0
-        msg = None
-        max_tries = 500
-        tries = 0
-        while found != 7 and tries < max_tries:
-            tries += 1
-            try:
-                msg = self._ci.recv(timeout=2)
-            except can.CanError as e:
-                logging.error("Canbus error: %s", str(e))
-                continue
-
-            if msg is None:
-                logging.error("No messages on canbus %s received. Check connection and speed setting.", connection)
-                break
-
-            logging.debug("Handshake: Received CAN frame 0x%X: %s", msg.arbitration_id, msg.data.hex())
-
-            if msg.arbitration_id == 0xC0 and found & 2 == 0:
-                logging.info("Found Valence U-BMS on %s in mode %x with %i modules communicating.",
-                             connection, msg.data[1], msg.data[5])
-                found = found | 2
-
-            elif msg.arbitration_id == 0xC1 and found & 1 == 0:
-                raw_voltage = msg.data[0]
-                try:
-                    raw_voltage_val = float(raw_voltage)
-                except Exception:
-                    raw_voltage_val = 0.0
-                if abs(2 * raw_voltage_val - self.maxChargeVoltage) > 0.15 * self.maxChargeVoltage:
-                    logging.error("Pack voltage of %dV differs significantly from configured max charge voltage %dV.",
-                                  raw_voltage_val, self.maxChargeVoltage)
-                found = found | 1
-
-            elif msg.arbitration_id == 0x180 and found & 4 == 0:
-                self.firmwareVersion = msg.data[0]
-                self.bms_type = msg.data[3]
-                self.hw_rev = msg.data[4]
-                logging.info("U-BMS type %d with firmware version %d",
-                             self.bms_type, self.firmwareVersion)
-
-        if found != 7:
-            logging.warning("Handshake not complete, but continuing for debug.")
-            found = 7
-
-        return found == 7
+        # Implement your handshake logic or just return True for now
+        return True
 
     def on_message(self, msg):
-        self.on_message_received(msg)
-
-    def on_message_received(self, msg):
-        logging.debug("CAN frame: 0x%X Data: %s", msg.arbitration_id, msg.data.hex())
-
-        if msg.arbitration_id == 0xC0:
+        # Example CAN message handling logic.
+        if 0x350 <= msg.arbitration_id <= (0x350 + self.numberOfModules * 2 - 1):
+            module = (msg.arbitration_id - 0x350) // 2
+            if (msg.arbitration_id & 1) == 0:
+                # Even arbitration_id: cell voltages
+                self.cellVoltages[module] = struct.unpack(">4H", msg.data)
+                self.moduleVoltage[module] = sum(self.cellVoltages[module])
+            else:
+                # Odd arbitration_id: temperature and SOC
+                self.moduleTemp[module], self.moduleSoc[module] = struct.unpack(">2H", msg.data[:4])
+        elif msg.arbitration_id == 0xC0:
             self.soc = msg.data[0]
-            logging.debug("SOC updated: %d", self.soc)
-
         elif msg.arbitration_id == 0xC1:
-            try:
-                self.current = struct.unpack("Bb", msg.data[0:2])[1]
-                logging.debug("Current updated: %d", self.current)
-            except Exception as e:
-                logging.warning("Failed to extract current: %s", str(e))
+            self.current = struct.unpack(">h", msg.data[:2])[0]
+        elif msg.arbitration_id == 0xC2:
+            self.voltage = struct.unpack(">H", msg.data[:2])[0] / 100.0
 
-        if 0x350 <= msg.arbitration_id <= 0x36F:
-            module = (msg.arbitration_id - 0x350) >> 1
-            if 0 <= module < self.numberOfModules:
-                if (msg.arbitration_id & 1) == 0:
-                    try:
-                        cell_vals = list(struct.unpack(">hhh", msg.data[2:8]))
-                        self.cellVoltages[module] = cell_vals
-                        logging.debug("Module %d 1st 3 cell voltages: %s", module, cell_vals)
-                    except Exception as e:
-                        logging.warning("Could not unpack 3 cell voltages for module %d: %s", module, str(e))
-                else:
-                    try:
-                        if not self.cellVoltages[module] or len(self.cellVoltages[module]) != 3:
-                            self.cellVoltages[module] = [0, 0, 0]
-                        cell_val = struct.unpack(">h", msg.data[2:4])[0]
-                        self.cellVoltages[module].append(cell_val)
-                        self.moduleVoltage[module] = sum(self.cellVoltages[module])
-                        logging.debug(
-                            "Module %d cell voltages: %s, module voltage: %d",
-                            module, self.cellVoltages[module], self.moduleVoltage[module]
-                        )
-                    except Exception as e:
-                        logging.warning("Could not unpack 4th cell voltage for module %d: %s", module, str(e))
+    def get_total_voltage(self):
+        # Prefer summed cell voltages for accuracy
+        return sum([sum(cells) for cells in self.cellVoltages if cells])
 
-        if msg.arbitration_id in range(0x6A, 0x6A + ((self.numberOfModules + 6) // 7)):
-            iStart = (msg.arbitration_id - 0x6A) * 7
-            fmt = "B" * (msg.dlc - 1)
-            try:
-                mSoc = struct.unpack(fmt, msg.data[1 : msg.dlc])
-                for idx, val in enumerate(mSoc):
-                    module_index = iStart + idx
-                    if module_index < self.numberOfModules:
-                        self.moduleSoc[module_index] = (val * 100) >> 8
-                        logging.debug("Module %d SOC: %d", module_index, self.moduleSoc[module_index])
-            except Exception as e:
-                logging.warning("Error unpacking module SOC: %s", str(e))
+    def get_soc(self):
+        return self.soc
 
-        if 0x76A <= msg.arbitration_id <= 0x76F:
-            iStart = (msg.arbitration_id - 0x76A) * 3
-            try:
-                if (iStart) < len(self.moduleTemp) and msg.dlc > 3:
-                    self.moduleTemp[iStart] = ((msg.data[2] * 256) + msg.data[3]) * 0.01
-                if msg.dlc > 5 and (iStart + 1) < len(self.moduleTemp):
-                    self.moduleTemp[iStart + 1] = ((msg.data[4] * 256) + msg.data[5]) * 0.01
-                if msg.dlc > 7 and (iStart + 2) < len(self.moduleTemp):
-                    self.moduleTemp[iStart + 2] = ((msg.data[6] * 256) + msg.data[7]) * 0.01
-                logging.debug("Module temps (starting at %d): %s", iStart, self.moduleTemp[iStart:iStart+3])
-            except Exception as e:
-                logging.warning("Error unpacking module temperature: %s", str(e))
+    def get_current(self):
+        return self.current / 10.0
 
-def main():
-    parser = argparse.ArgumentParser(description="ubmsbattery.py debug")
-    parser.add_argument("--capacity", "-c", type=int, default=650, help="Battery capacity, Ah")
-    parser.add_argument("--voltage", "-v", type=float, default=29.0, help="Battery max charge voltage")
-    parser.add_argument("--interface", "-i", type=str, default="can0", help="CAN device")
-    parser.add_argument("--modules", type=int, default=16, help="Number of modules")
-    parser.add_argument("--strings", type=int, default=4, help="Number of parallel strings")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    def get_temperature(self):
+        return max(self.moduleTemp) / 10.0 if self.moduleTemp else 25.0
 
-    args = parser.parse_args()
+    def get_firmware_version(self):
+        return self.firmwareVersion
 
-    loglevel = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(format="%(levelname)-8s %(message)s", level=loglevel)
+    def get_bms_type(self):
+        return self.bms_type
 
-    bat = UbmsBattery(
-        capacity=args.capacity,
-        voltage=args.voltage,
-        connection=args.interface,
-        numberOfModules=args.modules,
-        numberOfStrings=args.strings,
-    )
-
-    try:
-        while True:
-            print("\n---- U-BMS State ----")
-            print(f"SOC: {bat.soc}")
-            print(f"Current: {bat.current}")
-            print(f"Module Voltages: {bat.moduleVoltage}")
-            print(f"Module SOCs: {bat.moduleSoc}")
-            print(f"Module Temps: {bat.moduleTemp}")
-            time.sleep(5)
-    except KeyboardInterrupt:
-        print("Exiting.")
-
-if __name__ == "__main__":
-    main()
+    def get_hw_rev(self):
+        return self.hw_rev
