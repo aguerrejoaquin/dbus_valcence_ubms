@@ -16,7 +16,7 @@ class UbmsBattery(can.Listener):
         self.numberOfModules = max(numberOfModules, 16)
         self.numberOfStrings = max(numberOfStrings, 4)
         self.modulesInSeries = int(self.numberOfModules / self.numberOfStrings)
-        self.cellsPerModule = 3  # Only 3 cells per module with this protocol
+        self.cellsPerModule = 4  # Now we get all 4 voltages!
         self.chargeComplete = 0
         self.soc = 0
         self.mode = 0
@@ -84,15 +84,19 @@ class UbmsBattery(can.Listener):
         elif 0x350 <= msg.arbitration_id < 0x350 + self.numberOfModules * 2:
             module = (msg.arbitration_id - 0x350) >> 1
             print(f"0x{msg.arbitration_id:X} module={module} data={msg.data.hex()} len={len(msg.data)}")
-            if module < self.numberOfModules and (msg.arbitration_id & 1) == 0:
-                if len(msg.data) >= 7:
-                    # Unpack 3 little-endian unsigned shorts (cell voltages)
+            if module < self.numberOfModules:
+                if (msg.arbitration_id & 1) == 0 and len(msg.data) >= 7:
+                    # Even: cells 1-3
                     c1, c2, c3 = struct.unpack("<3H", msg.data[1:7])
-                    self.cellVoltages[module] = (c1, c2, c3, 0)
-                    self.moduleVoltage[module] = c1 + c2 + c3
-                else:
-                    self.cellVoltages[module] = (0, 0, 0, 0)
-                    self.moduleVoltage[module] = 0
+                    c4 = self.cellVoltages[module][3] if self.cellVoltages[module] else 0
+                    self.cellVoltages[module] = (c1, c2, c3, c4)
+                    self.moduleVoltage[module] = c1 + c2 + c3 + c4
+                elif (msg.arbitration_id & 1) == 1 and len(msg.data) >= 4:
+                    # Odd: cell 4 only
+                    c4 = (msg.data[2] << 8) | msg.data[1]
+                    c1, c2, c3 = self.cellVoltages[module][:3]
+                    self.cellVoltages[module] = (c1, c2, c3, c4)
+                    self.moduleVoltage[module] = c1 + c2 + c3 + c4
         elif 0x6A <= msg.arbitration_id < 0x6A + (self.numberOfModules // 7 + 1):
             iStart = (msg.arbitration_id - 0x6A) * 7
             fmt = "B" * (msg.dlc - 1)
