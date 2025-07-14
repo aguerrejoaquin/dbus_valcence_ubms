@@ -13,7 +13,7 @@ from vedbus import VeDbusService
 
 from ubmsbattery import UbmsBattery
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 
 class DbusBatteryService:
     def __init__(self, servicename, deviceinstance, voltage, capacity, modules=16, strings=4, connection="can0"):
@@ -52,15 +52,15 @@ class DbusBatteryService:
         self._dbusservice.add_path("/System/NrOfStrings", strings)
         self._dbusservice.add_path("/System/NrOfModulesPerString", modules // strings)
 
-        # Min/max cell voltage & temperature and IDs for Victron Details page
+        # All 8 required Min/Max cell voltage and temperature paths for Victron
         self._dbusservice.add_path("/System/MinVoltageCell", 0.0)
-        self._dbusservice.add_path("/System/MinVoltageCellId", "-")
+        self._dbusservice.add_path("/System/MinVoltageCellId", "1.1")
         self._dbusservice.add_path("/System/MaxVoltageCell", 0.0)
-        self._dbusservice.add_path("/System/MaxVoltageCellId", "-")
+        self._dbusservice.add_path("/System/MaxVoltageCellId", "1.1")
         self._dbusservice.add_path("/System/MinCellTemperature", 0.0)
-        self._dbusservice.add_path("/System/MinCellTemperatureId", "-")
+        self._dbusservice.add_path("/System/MinCellTemperatureId", "1.1")
         self._dbusservice.add_path("/System/MaxCellTemperature", 0.0)
-        self._dbusservice.add_path("/System/MaxCellTemperatureId", "-")
+        self._dbusservice.add_path("/System/MaxCellTemperatureId", "1.1")
 
         # Real-time values
         self._dbusservice.add_path("/Dc/0/Voltage", 0.0)
@@ -157,15 +157,17 @@ class DbusBatteryService:
         if cell_voltages_nonzero:
             min_v, min_m, min_c = min(cell_voltages_nonzero, key=lambda x: x[0])
             max_v, max_m, max_c = max(cell_voltages_nonzero, key=lambda x: x[0])
+            min_cell_id = f"{min_m}.{min_c}"
+            max_cell_id = f"{max_m}.{max_c}"
+        else:
+            min_v = max_v = 0.0
+            min_cell_id = max_cell_id = "1.1"
 
-        # Format cell location IDs for Victron (e.g. "2.3" for module 2 cell 3)
-        min_cell_id = f"{min_m}.{min_c}" if min_m and min_c else "-"
-        max_cell_id = f"{max_m}.{max_c}" if max_m and max_c else "-"
-
-        # No per-cell temp, so use pack min/max
+        # Min/max cell temperature and location
+        # (No per-cell temp: use pack min/max and always "1.1")
         min_t = min_cell_temp
         max_t = max_cell_temp
-        min_tm = min_tc = max_tm = max_tc = 0
+        min_temp_id = max_temp_id = "1.1"
 
         # Per-module voltage/soc/temp
         for m in range(self.modules):
@@ -207,14 +209,15 @@ class DbusBatteryService:
         self._dbusservice["/State"] = state
         self._dbusservice["/Mode"] = mode
 
+        # --- ALL 8 Min/Max cells/temps required by Victron ---
         self._dbusservice["/System/MinVoltageCell"] = min_v
         self._dbusservice["/System/MinVoltageCellId"] = min_cell_id
         self._dbusservice["/System/MaxVoltageCell"] = max_v
         self._dbusservice["/System/MaxVoltageCellId"] = max_cell_id
         self._dbusservice["/System/MinCellTemperature"] = min_t
-        self._dbusservice["/System/MinCellTemperatureId"] = "-"
+        self._dbusservice["/System/MinCellTemperatureId"] = min_temp_id
         self._dbusservice["/System/MaxCellTemperature"] = max_t
-        self._dbusservice["/System/MaxCellTemperatureId"] = "-"
+        self._dbusservice["/System/MaxCellTemperatureId"] = max_temp_id
 
         # --- Debug: print all published values ---
         print("--- D-BUS PUBLISH ---")
