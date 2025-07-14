@@ -56,24 +56,26 @@ class UbmsBattery(can.Listener):
         self.updated = -1
         self.cyclicModeTask = None
 
+        # For debugging: remove can_filters to accept all frames
         self._ci = can.interface.Bus(
             channel=connection,
-            bustype="socketcan",
-            can_filters=[
-                {"can_id": 0x0CF, "can_mask": 0xFF0},
-                {"can_id": 0x180, "can_mask": 0xFFF},
-            ],
+            bustype="socketcan"
+            # can_filters=[  # Uncomment if you want to restore filtering
+            #     {"can_id": 0x0CF, "can_mask": 0xFF0},
+            #     {"can_id": 0x180, "can_mask": 0xFFF},
+            # ],
         )
 
         # Register this instance as a listener
         self.notifier = can.Notifier(self._ci, [self])
 
     def on_message_received(self, msg):
+        print(f"CAN RX: {msg.arbitration_id:03X} {msg.data.hex()}")
         self.on_message(msg)
 
     def on_message(self, msg):
+        print(f"on_message: id={msg.arbitration_id:03X} data={msg.data.hex()}")
         # Example CAN message handling logic (should be adapted to your needs)
-        # The below is a template and should be updated for your actual CAN frames
         if 0x350 <= msg.arbitration_id <= (0x350 + self.numberOfModules * 2 - 1):
             module = (msg.arbitration_id - 0x350) // 2
             if (msg.arbitration_id & 1) == 0:
