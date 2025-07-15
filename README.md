@@ -67,13 +67,26 @@ Check with the "ifconfig" for the CAN number port (ex: can0). You will need to k
 -v max voltage of the pack in series. I use (4) 27XP-12v batteries with a max charge voltage of 14V each.
 -c capacity in Ah of the system (only the ones in parallel)
 
-```
- cd dbus_valence_ubms
+1. Debug/test the raw CAN reading with ubmsbattery.py
+This will run the CAN listener/debugger for 10 seconds by default:
+Adjust --duration if you want it to run longer.
 
- python dbus_ubms.py -i can0 -v 58.0 -c 552
- or
- nohup python dbus_ubms.py -i can0 -v 58.0 -c 552 &
 ```
+cd dbus_valence_ubms
+python3 ubmsbattery.py --modules 16 --strings 4 --capacity 650 --voltage 29.0 --connection can0 --duration 10
+```
+2. Run the D-Bus service with dbus_ubms.py
+This will start the Victron D-Bus service with your configuration:
+
+```
+cd dbus_valence_ubms
+python3 dbus_ubms.py --modules 16 --strings 4 --capacity 650 --voltage 29.0 --interface can0
+```
+Notes:
+
+You might need to run with sudo if you get permission errors (especially for CAN and D-Bus).
+If you want more or less debug output, set the logging level in the code or run with sudo.
+
 
 ## Run as a service: 
 NOTE: IF you have your can connection in another port number, you need to change can0 by yours.
@@ -96,9 +109,8 @@ after that, you can just reboot or call svc command to run the service.
 ```
 NOTE: IF you have your can connection in another port number, you need to change can0 in the rc.local file.
 
-<img width="482" alt="image" src="https://github.com/aguerrejoaquin/dbus_ubms/assets/132913905/92a5a7d5-18ee-4723-93b2-5928f5e55524">
+<img width="1179" height="633" alt="image" src="https://github.com/user-attachments/assets/b3bced6d-d0ef-4c97-93e4-4b34911bc549" />
 
-<img width="487" alt="image" src="https://github.com/aguerrejoaquin/dbus_ubms/assets/132913905/a591bfb3-fa9a-4ba6-88b7-01df24a50bf7">
 
 
 ## Configuration of U-BMS
@@ -113,7 +125,7 @@ NOTE: IF you have your can connection in another port number, you need to change
  connect battery voltage
  connect CAN and CAN 5V supply
  connect +12V for System and Ignition
- in a system with x modules in series and multiple in parallel, module numbers 1 to x have to be assigned to one string, pack voltage calculation depends on this 
+ In a system SxPy (Series, Parallel), assign IDs to each modules with X bein the 1 to x and the parallel starts with x+1)
 ``` 
 ## Additional comments
 You may experience that after activating the can port in the GUI, it will appear a new BMS (ex: LG battery) with wrong data. This happens because the is a service that runs automatically looking for BMSs once a CAN connection is detected. At this point, you have two options: you can ignore this, or you can disable this service for the port that you will be using for your BMS.
