@@ -6,6 +6,9 @@ import struct
 import argparse
 import time
 
+# === CAN comms lost timeout (seconds) ===
+COMMS_TIMEOUT = 5
+
 class UbmsBattery(can.Listener):
     opModes = {0: "Standby", 1: "Charge", 2: "Drive"}
     opState = {0: 14, 1: 9, 2: 9}
@@ -50,7 +53,7 @@ class UbmsBattery(can.Listener):
         self.hw_rev = 0
         self.numberOfModulesBalancing = 0
         self.numberOfModulesCommunicating = 0
-        self.updated = -1
+        self.updated = time.time()
         self.cyclicModeTask = None
 
         self._ci = can.interface.Bus(
@@ -62,7 +65,7 @@ class UbmsBattery(can.Listener):
 
     def on_message_received(self, msg):
         print(f"CAN RX: {msg.arbitration_id:03X} {msg.data.hex()} (dlc={msg.dlc})")
-        self.updated = getattr(msg, "timestamp", 0)
+        self.updated = time.time()
 
         if msg.arbitration_id == 0xC0:
             self.soc = msg.data[0]
@@ -173,7 +176,11 @@ def main():
     parser.add_argument("--modules", type=int, default=16)
     parser.add_argument("--strings", type=int, default=4)
     parser.add_argument("--duration", type=int, default=10, help="How long to listen (seconds)")
+    parser.add_argument("--comms-timeout", type=int, default=COMMS_TIMEOUT, help="CAN comms lost timeout (seconds)")
     args = parser.parse_args()
+
+    global COMMS_TIMEOUT
+    COMMS_TIMEOUT = args.comms_timeout
 
     logging.basicConfig(format="%(levelname)-8s %(message)s", level=(logging.DEBUG))
     bat = UbmsBattery(
@@ -188,7 +195,16 @@ def main():
 
     print("Listening for CAN messages...")
     try:
-        time.sleep(args.duration)
+        start_time = time.time()
+        warned = False
+        while time.time() - start_time < args.duration:
+            time.sleep(0.5)
+            since = time.time() - bat.updated
+            if since > COMMS_TIMEOUT and not warned:
+                print(f"\n*** WARNING: CAN communication lost! No CAN data received in {since:.1f} seconds. ***\n")
+                warned = True
+            if since <= COMMS_TIMEOUT:
+                warned = False
     except KeyboardInterrupt:
         pass
 
