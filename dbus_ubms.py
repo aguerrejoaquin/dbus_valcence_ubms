@@ -31,6 +31,9 @@ from ve_utils import exit_on_error
 
 VERSION = "2.4.4"
 
+# === CAN comms lost timeout (seconds) ===
+COMMS_TIMEOUT = 5
+
 class DbusBatteryService:
     def __init__(
         self,
@@ -42,6 +45,7 @@ class DbusBatteryService:
         strings=4,
         productname="Valence U-BMS",
         connection="can0",
+        comms_timeout=COMMS_TIMEOUT,
     ):
         self._bat = UbmsBattery(
             capacity=capacity,
@@ -50,6 +54,7 @@ class DbusBatteryService:
             numberOfModules=modules,
             numberOfStrings=strings
         )
+        self.comms_timeout = comms_timeout
         self._dbusservice = VeDbusService(
             f"{servicename}.socketcan_{connection}_di{deviceinstance}",
             register=False
@@ -99,6 +104,8 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Alarms/LowSoc", 0)
         self._dbusservice.add_path("/Alarms/LowTemperature", 0)
         self._dbusservice.add_path("/Alarms/HighTemperature", 0)
+        # Communication lost alarm
+        self._dbusservice.add_path("/Alarms/CommunicationLost", 0)
         # TimeToGo path
         self._dbusservice.add_path("/TimeToGo", 0)
         # Parameters section (Info)
@@ -173,6 +180,7 @@ class DbusBatteryService:
         GLib.timeout_add(1000, exit_on_error, self._update)
 
     def _update(self):
+        now = time()
         voltage = self._bat.get_pack_voltage() if hasattr(self._bat, "get_pack_voltage") else getattr(self._bat, "voltage", 0.0)
         current = getattr(self._bat, "current", 0.0)
         temperature = getattr(self._bat, "maxCellTemperature", 0.0)
@@ -188,6 +196,14 @@ class DbusBatteryService:
         cell_temperatures = list(itertools.chain(*getattr(self._bat, "cellTemperatures", [])))
         cells_per_module = int(getattr(self._bat, "cellsPerModule", 4))
         module_count = int(getattr(self._bat, "numberOfModules", 16))
+
+        # --- CAN comms lost detection ---
+        comms_ok = (now - getattr(self._bat, "updated", 0)) <= self.comms_timeout
+        try:
+            self._dbusservice["/Connected"] = int(comms_ok)
+            self._dbusservice["/Alarms/CommunicationLost"] = 0 if comms_ok else 2
+        except Exception as e:
+            print(f"[DEBUG] Error setting comms lost alarm: {e}")
 
         # Min/max cell voltage and temperature locations
         min_voltage_cell_id = "M1C1"
@@ -225,7 +241,7 @@ class DbusBatteryService:
         self._dbusservice["/Dc/0/Temperature"] = float(temperature)
         self._dbusservice["/Dc/0/Power"] = power
         self._dbusservice["/Soc"] = float(soc)
-        self._dbusservice["/Connected"] = 1 if getattr(self._bat, "updated", -1) != -1 else 0
+
         self._dbusservice["/System/MinCellVoltage"] = float(min_cell_v)
         self._dbusservice["/System/MaxCellVoltage"] = float(max_cell_v)
         self._dbusservice["/System/MinVoltageCellId"] = str(min_voltage_cell_id)
@@ -341,11 +357,12 @@ def main():
     parser.add_argument("--modules", type=int, default=16, help="number of modules")
     parser.add_argument("--strings", type=int, default=4, help="number of strings")
     parser.add_argument("--deviceinstance", type=int, default=0, help="device instance")
+    parser.add_argument("--comms-timeout", type=int, default=COMMS_TIMEOUT, help="CAN comms lost timeout (seconds)")
     args = parser.parse_args()
     logging.basicConfig(format="%(levelname)-8s %(message)s", level=logging.INFO)
     os.system(f"ip link set {args.interface} type can bitrate 250000")
     os.system(f"ifconfig {args.interface} up")
-    print(f"Starting dbus_ubms {VERSION} on {args.interface}")
+    print(f"Starting dbus_ubms {VERSION} on {args.interface} (comm timeout {args.comms_timeout}s)")
     from dbus.mainloop.glib import DBusGMainLoop
     DBusGMainLoop(set_as_default=True)
     DbusBatteryService(
@@ -356,6 +373,7 @@ def main():
         voltage=float(args.voltage),
         modules=args.modules,
         strings=args.strings,
+        comms_timeout=args.comms_timeout,
     )
     print("Connected to dbus, switching to GLib.MainLoop()")
     GLib.MainLoop().run()
