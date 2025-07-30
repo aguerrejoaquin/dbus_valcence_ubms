@@ -37,7 +37,6 @@ class UbmsBattery(can.Listener):
         self.maxPcbTemperature = 0
         self.maxCellTemperature = 0
         self.minCellTemperature = 0
-        # cellVoltages: list of lists [module][cell] in mV
         self.cellVoltages = [[0, 0, 0, 0] for _ in range(self.numberOfModules)]
         self.moduleVoltage = [0 for _ in range(self.numberOfModules)]
         self.moduleCurrent = [0 for _ in range(self.numberOfModules)]
@@ -79,48 +78,44 @@ class UbmsBattery(can.Listener):
             self.shutdownReason = msg.data[7]
         elif msg.arbitration_id == 0xC1:
             self.current = struct.unpack("Bb", msg.data[0:2])[1]
-            # --- PATCH: update maxChargeCurrent and maxDischargeCurrent dynamically, as in the improved code ---
-            # Drive mode check
             if (self.mode & 0x2) != 0:
                 self.maxDischargeCurrent = int((struct.unpack("<h", msg.data[3:5])[0]) / 10)
-                # Note: [5], [7] used in second code, check BMS spec for exact bytes
                 if len(msg.data) >= 8:
                     self.maxChargeCurrent = int((struct.unpack("<h", bytearray([msg.data[5], msg.data[7]]))[0]) / 10)
                 print(f"[PATCH] Updated maxChargeCurrent={self.maxChargeCurrent}, maxDischargeCurrent={self.maxDischargeCurrent} (drive mode)")
         elif msg.arbitration_id == 0xC2:
-            # Charge mode only
             if (self.mode & 0x1) != 0:
                 self.chargeComplete = (msg.data[3] & 0x4) >> 2
-                # Only apply lower charge current when equalizing
                 if (self.mode & 0x18) == 0x18:
                     self.maxChargeCurrent = msg.data[0]
                     print(f"[PATCH] Updated maxChargeCurrent={self.maxChargeCurrent} (equalizing)")
                 else:
                     self.maxChargeCurrent = self.capacity * 0.1
                     print(f"[PATCH] Updated maxChargeCurrent={self.maxChargeCurrent} (charge mode, default 0.1C)")
+        elif 0x350 <= msg.arbitration_id <= 0x35F:
+            module = (msg.arbitration_id - 0x350) // 2
+            if (msg.arbitration_id & 1) == 0 and len(msg.data) >= 8:
+                # Even IDs: cells 1-3
+                c1 = int.from_bytes(msg.data[2:4], byteorder='big')
+                c2 = int.from_bytes(msg.data[4:6], byteorder='big')
+                c3 = int.from_bytes(msg.data[6:8], byteorder='big')
+                old_cells = self.cellVoltages[module]
+                self.cellVoltages[module] = [c1, c2, c3, old_cells[3]]
+            elif (msg.arbitration_id & 1) == 1 and len(msg.data) >= 4:
+                # Odd IDs: cell 4
+                c4 = int.from_bytes(msg.data[2:4], byteorder='big')
+                old_cells = self.cellVoltages[module]
+                self.cellVoltages[module] = [old_cells[0], old_cells[1], old_cells[2], c4]
+            # Only update moduleVoltage if all cells are non-zero
+            if all(self.cellVoltages[module]):
+                self.moduleVoltage[module] = sum(self.cellVoltages[module])
+            print(f"Updating module {module+1}: cells={self.cellVoltages[module]}, moduleVoltage={self.moduleVoltage[module]} mV")
         elif msg.arbitration_id == 0xC4:
-            # Pack-level temperatures (degrees C)
             self.maxCellTemperature = msg.data[0] - 40
             self.minCellTemperature = msg.data[1] - 40
             self.maxPcbTemperature = msg.data[3] - 40
             self.maxCellVoltage = struct.unpack("<h", msg.data[4:6])[0] * 0.001
             self.minCellVoltage = struct.unpack("<h", msg.data[6:8])[0] * 0.001
-        elif 0x350 <= msg.arbitration_id < 0x350 + self.numberOfModules * 2:
-            module = (msg.arbitration_id - 0x350) >> 1
-            print(f"0x{msg.arbitration_id:X} module={module} data={msg.data.hex()} len={len(msg.data)}")
-            if module < self.numberOfModules:
-                if (msg.arbitration_id & 1) == 0 and len(msg.data) >= 7:
-                    c1, c2, c3 = struct.unpack("<3H", msg.data[1:7])
-                    c4 = self.cellVoltages[module][3] if self.cellVoltages[module] else 0
-                    self.cellVoltages[module] = [c1, c2, c3, c4]
-                    self.moduleVoltage[module] = c1 + c2 + c3 + c4
-                elif (msg.arbitration_id & 1) == 1 and len(msg.data) >= 4:
-                    c4 = (msg.data[2] << 8) | msg.data[1]
-                    c1, c2, c3 = self.cellVoltages[module][:3]
-                    self.cellVoltages[module] = [c1, c2, c3, c4]
-                    self.moduleVoltage[module] = c1 + c2 + c3 + c4
-                print(f"Updating module {module+1}: cells={self.cellVoltages[module]}, moduleVoltage={self.moduleVoltage[module]} mV")
-
         elif 0x6A <= msg.arbitration_id < 0x6A + (self.numberOfModules // 7 + 1):
             iStart = (msg.arbitration_id - 0x6A) * 7
             fmt = "B" * (msg.dlc - 1)
@@ -158,7 +153,6 @@ class UbmsBattery(can.Listener):
         for idx, cells in enumerate(self.cellVoltages):
             print(f"  Module {idx+1:02}: " + " ".join(f"{v/1000:.3f}V" for v in cells))
         try:
-            # Print string-by-string sum for debug
             for s in range(self.numberOfStrings):
                 start = s * self.modulesInSeries
                 end = start + self.modulesInSeries
@@ -171,9 +165,6 @@ class UbmsBattery(can.Listener):
         print("-------------------------------")
 
     def get_pack_voltage(self):
-        # For NxSxP: modulesInSeries, numberOfStrings, numberOfModules
-        # Each string has modulesInSeries modules in series.
-        # Pack voltage should reflect the average voltage seen across all series strings.
         sum_strings = []
         for s in range(self.numberOfStrings):
             start = s * self.modulesInSeries
