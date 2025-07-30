@@ -2,6 +2,7 @@
 
 import logging
 import time
+import argparse
 from gi.repository import GLib
 from dbus.mainloop.glib import DBusGMainLoop
 import dbus
@@ -11,46 +12,52 @@ class DbusService:
     def __init__(self, battery):
         self._bat = battery
 
+        # Setup DBus main loop
         DBusGMainLoop(set_as_default=True)
         self._bus = dbus.SystemBus()
-        # Example DBus service setup
-        self._dbusservice = self._bus.request_name("com.victronenergy.battery.ubms")
+        # This is a placeholder for the real DBus service initialization.
+        # Replace this with your actual DBus service registration
+        # For demo, we use a dictionary to simulate DBus paths.
+        self._dbusservice = {}
+        self._init_paths()
 
-        # Use a dictionary to simulate the relevant DBus paths for demonstration
-        self.paths = {
-            "/Dc/0/Voltage": self._bat.voltage,
-            "/Dc/0/Current": self._bat.current,
-            "/Soc": self._bat.soc,
-            "/System/NrOfModulesOnline": self._bat.numberOfModulesCommunicating,
-            "/System/NrOfModules": self._bat.numberOfModules,
-        }
+    def _init_paths(self):
+        # Initialize all necessary DBus paths with '0' or starting value
+        self._dbusservice["/Dc/0/Voltage"] = 0.0
+        self._dbusservice["/Dc/0/Current"] = 0.0
+        self._dbusservice["/Soc"] = 0.0
+        self._dbusservice["/System/NrOfModulesOnline"] = 0
+        self._dbusservice["/System/NrOfModules"] = self._bat.numberOfModules
 
     def update(self):
-        # Always use the calculated pack voltage from battery.get_pack_voltage()
-        self._bat.voltage = self._bat.get_pack_voltage()
-        self.paths["/Dc/0/Voltage"] = self._bat.voltage
-        self.paths["/Dc/0/Current"] = self._bat.current
-        self.paths["/Soc"] = self._bat.soc
-        self.paths["/System/NrOfModulesOnline"] = self._bat.numberOfModulesCommunicating
-        self.paths["/System/NrOfModules"] = self._bat.numberOfModules
+        # Always use the calculated pack voltage for DBus!
+        pack_voltage = self._bat.get_pack_voltage()
+        # Also update .voltage for compatibility
+        self._bat.voltage = pack_voltage
 
-        # Here you would actually update the DBus paths for Victron, e.g.:
-        # self._dbusservice["/Dc/0/Voltage"] = self._bat.voltage
-        # etc.
+        # DEBUG: Print the voltage being sent to DBus
+        logging.debug(
+            f"DBUS UPDATE: bat.voltage={self._bat.voltage:.3f}V, get_pack_voltage={pack_voltage:.3f}V, current={self._bat.current}A, soc={self._bat.soc}%"
+        )
 
-        logging.debug(f"DBus update: voltage={self._bat.voltage:.3f}V, current={self._bat.current}A, soc={self._bat.soc}%")
+        self._dbusservice["/Dc/0/Voltage"] = pack_voltage
+        self._dbusservice["/Dc/0/Current"] = self._bat.current
+        self._dbusservice["/Soc"] = self._bat.soc
+        self._dbusservice["/System/NrOfModulesOnline"] = self._bat.numberOfModulesCommunicating
+        self._dbusservice["/System/NrOfModules"] = self._bat.numberOfModules
+
+        # If using a real DBus service, here is where you would set the values on the DBus paths
 
     def run(self):
-        # Main loop
+        # Main GLib loop with periodic update
         loop = GLib.MainLoop()
         def periodic_update():
             self.update()
-            return True  # repeat
+            return True  # Repeat this callback
         GLib.timeout_add_seconds(1, periodic_update)
         loop.run()
 
 def main():
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--capacity", type=int, default=650)
     parser.add_argument("--voltage", type=float, default=29.0)
