@@ -158,15 +158,30 @@ class UbmsBattery(can.Listener):
         for idx, cells in enumerate(self.cellVoltages):
             print(f"  Module {idx+1:02}: " + " ".join(f"{v/1000:.3f}V" for v in cells))
         try:
+            # Print string-by-string sum for debug
+            for s in range(self.numberOfStrings):
+                start = s * self.modulesInSeries
+                end = start + self.modulesInSeries
+                string_voltage = sum(self.moduleVoltage[start:end]) / 1000.0
+                print(f"String {s+1}: sum of modules {start+1}-{end}: {string_voltage:.3f} V")
             pack_voltage = self.get_pack_voltage()
-            print(f"Pack voltage (sum of modules 0-{self.modulesInSeries-1}): {pack_voltage:.3f} V")
+            print(f"Pack voltage (average of all strings): {pack_voltage:.3f} V")
         except Exception as e:
             print(f"Pack voltage calculation error: {e}")
         print("-------------------------------")
 
     def get_pack_voltage(self):
-        pack_voltage = sum(self.moduleVoltage[:self.modulesInSeries]) / 1000.0
-        return pack_voltage
+        # For NxSxP: modulesInSeries, numberOfStrings, numberOfModules
+        # Each string has modulesInSeries modules in series.
+        # Pack voltage should reflect the average voltage seen across all series strings.
+        sum_strings = []
+        for s in range(self.numberOfStrings):
+            start = s * self.modulesInSeries
+            end = start + self.modulesInSeries
+            string_voltage = sum(self.moduleVoltage[start:end])
+            sum_strings.append(string_voltage)
+        avg_voltage = sum(sum_strings) / len(sum_strings) / 1000.0  # in V
+        return avg_voltage
 
 def main():
     parser = argparse.ArgumentParser()
@@ -179,8 +194,7 @@ def main():
     parser.add_argument("--comms-timeout", type=int, default=COMMS_TIMEOUT, help="CAN comms lost timeout (seconds)")
     args = parser.parse_args()
 
-    global COMMS_TIMEOUT
-    COMMS_TIMEOUT = args.comms_timeout
+    comms_timeout = args.comms_timeout
 
     logging.basicConfig(format="%(levelname)-8s %(message)s", level=(logging.DEBUG))
     bat = UbmsBattery(
@@ -200,10 +214,10 @@ def main():
         while time.time() - start_time < args.duration:
             time.sleep(0.5)
             since = time.time() - bat.updated
-            if since > COMMS_TIMEOUT and not warned:
+            if since > comms_timeout and not warned:
                 print(f"\n*** WARNING: CAN communication lost! No CAN data received in {since:.1f} seconds. ***\n")
                 warned = True
-            if since <= COMMS_TIMEOUT:
+            if since <= comms_timeout:
                 warned = False
     except KeyboardInterrupt:
         pass
@@ -211,7 +225,7 @@ def main():
     print("\n------ DEBUG SUMMARY ------")
     logging.info("Number of modules: %d", bat.numberOfModules)
     logging.info("Number of strings: %d", bat.numberOfStrings)
-    logging.info("Pack voltage (sum of modules 0-%d): %.3f V", bat.modulesInSeries-1, bat.get_pack_voltage())
+    logging.info("Pack voltage (average of all strings): %.3f V", bat.get_pack_voltage())
     logging.info("Pack current: %dA", bat.current)
     logging.info("Pack SOC: %d%%", bat.soc)
     logging.info("Max cell voltage: %1.3fV", bat.maxCellVoltage)
