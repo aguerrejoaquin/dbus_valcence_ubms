@@ -126,6 +126,13 @@ class UbmsBattery(can.Listener):
                 if (iStart + idx) < len(self.moduleSoc):
                     self.moduleSoc[iStart + idx] = (m * 100) >> 8
 
+        # --- Always update pack voltage from cell data ---
+        try:
+            self.voltage = self.get_pack_voltage()
+        except Exception as e:
+            print(f"Pack voltage calculation error: {e}")
+            self.voltage = 0
+
         print("----- Battery State Debug -----")
         print(f"State: {self.state} (mode={self.mode})")
         print(f"Pack SOC: {self.soc}%")
