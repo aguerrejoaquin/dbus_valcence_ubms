@@ -92,24 +92,26 @@ class UbmsBattery(can.Listener):
                 else:
                     self.maxChargeCurrent = self.capacity * 0.1
                     print(f"[PATCH] Updated maxChargeCurrent={self.maxChargeCurrent} (charge mode, default 0.1C)")
-        elif 0x350 <= msg.arbitration_id <= 0x35F:
+        # Updated: support all modules, not just first 8
+        elif 0x350 <= msg.arbitration_id <= (0x350 + (self.numberOfModules * 2) - 1):
             module = (msg.arbitration_id - 0x350) // 2
-            if (msg.arbitration_id & 1) == 0 and len(msg.data) >= 8:
-                # Even IDs: cells 1-3
-                c1 = int.from_bytes(msg.data[2:4], byteorder='big')
-                c2 = int.from_bytes(msg.data[4:6], byteorder='big')
-                c3 = int.from_bytes(msg.data[6:8], byteorder='big')
-                old_cells = self.cellVoltages[module]
-                self.cellVoltages[module] = [c1, c2, c3, old_cells[3]]
-            elif (msg.arbitration_id & 1) == 1 and len(msg.data) >= 4:
-                # Odd IDs: cell 4
-                c4 = int.from_bytes(msg.data[2:4], byteorder='big')
-                old_cells = self.cellVoltages[module]
-                self.cellVoltages[module] = [old_cells[0], old_cells[1], old_cells[2], c4]
-            # Only update moduleVoltage if all cells are non-zero
-            if all(self.cellVoltages[module]):
-                self.moduleVoltage[module] = sum(self.cellVoltages[module])
-            print(f"Updating module {module+1}: cells={self.cellVoltages[module]}, moduleVoltage={self.moduleVoltage[module]} mV")
+            if module < self.numberOfModules:
+                if (msg.arbitration_id & 1) == 0 and len(msg.data) >= 8:
+                    # Even IDs: cells 1-3
+                    c1 = int.from_bytes(msg.data[2:4], byteorder='big')
+                    c2 = int.from_bytes(msg.data[4:6], byteorder='big')
+                    c3 = int.from_bytes(msg.data[6:8], byteorder='big')
+                    old_cells = self.cellVoltages[module]
+                    self.cellVoltages[module] = [c1, c2, c3, old_cells[3]]
+                elif (msg.arbitration_id & 1) == 1 and len(msg.data) >= 4:
+                    # Odd IDs: cell 4
+                    c4 = int.from_bytes(msg.data[2:4], byteorder='big')
+                    old_cells = self.cellVoltages[module]
+                    self.cellVoltages[module] = [old_cells[0], old_cells[1], old_cells[2], c4]
+                # Only update moduleVoltage if all cells are non-zero
+                if all(self.cellVoltages[module]):
+                    self.moduleVoltage[module] = sum(self.cellVoltages[module])
+                print(f"Updating module {module+1}: cells={self.cellVoltages[module]}, moduleVoltage={self.moduleVoltage[module]} mV")
         elif msg.arbitration_id == 0xC4:
             self.maxCellTemperature = msg.data[0] - 40
             self.minCellTemperature = msg.data[1] - 40
