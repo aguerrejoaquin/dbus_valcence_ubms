@@ -331,6 +331,18 @@ class DbusBatteryService:
         for key, val in self._history.items():
             self._dbusservice[f"/History/{key}"] = val
 
+        # === On-demand debug print of all DBus values ===
+        trigger_path = "/tmp/victron_debug"
+        if os.path.exists(trigger_path):
+            print("=== VICRON DBUS SNAPSHOT ===")
+            for k, v in sorted(self._dbusservice.items()):
+                print(f"{k}: {v}")
+            print("============================")
+            try:
+                os.remove(trigger_path)
+            except Exception as e:
+                print(f"Could not remove debug trigger file: {e}")
+
         return True
 
 def main():
