@@ -173,6 +173,7 @@ class DbusBatteryService:
         GLib.timeout_add(1000, exit_on_error, self._update)
 
     def _update(self):
+        print("[DEBUG] _update() called")
         voltage = self._bat.get_pack_voltage() if hasattr(self._bat, "get_pack_voltage") else getattr(self._bat, "voltage", 0.0)
         current = getattr(self._bat, "current", 0.0)
         temperature = getattr(self._bat, "maxCellTemperature", 0.0)
@@ -218,6 +219,7 @@ class DbusBatteryService:
             max_temp_cell_id = f"M{max_module}C{max_cell}"
 
         # Main battery stats
+        print(f"[DEBUG] Setting /Dc/0/Voltage to {voltage} (should match pack voltage!)")
         self._dbusservice["/Dc/0/Voltage"] = float(voltage)
         self._dbusservice["/Dc/Battery/Voltage"] = float(voltage)
         self._dbusservice["/Dc/0/Current"] = float(current)
