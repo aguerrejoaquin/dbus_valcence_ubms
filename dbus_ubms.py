@@ -11,6 +11,8 @@ and min/max temperature location to /System/MinTemperatureCellId and /System/Max
 Now also publishes each module's SOC to /Custom/ModuleSOC/N and cell voltages to /Custom/ModuleN/CellM for use in custom GUI pages.
 
 Includes an interactive debug prompt: type 'pack' for pack voltage, 'dbus' for all DBus values, 'exit' to quit the prompt.
+
+Includes CAN comms lost detection via Customer Code (from CAN id 0x180, bytes 5-7).
 """
 
 import platform
@@ -19,10 +21,10 @@ import sys
 import os
 import itertools
 import threading
-
+import time
 from gi.repository import GLib
 import dbus
-from time import time
+from time import time as now
 from datetime import datetime
 from argparse import ArgumentParser
 
@@ -102,6 +104,8 @@ class DbusBatteryService:
         self._dbusservice.add_path("/Alarms/LowSoc", 0)
         self._dbusservice.add_path("/Alarms/LowTemperature", 0)
         self._dbusservice.add_path("/Alarms/HighTemperature", 0)
+        self._dbusservice.add_path("/Alarms/LostComms", 0)
+        self._dbusservice.add_path("/Info/CustomerCode", "")
         # TimeToGo path
         self._dbusservice.add_path("/TimeToGo", 0)
         # Parameters section (Info)
@@ -176,6 +180,28 @@ class DbusBatteryService:
         GLib.timeout_add(1000, exit_on_error, self._update)
 
     def _update(self):
+        # === Lost comms detection via customer code heartbeat ===
+        now_ts = now()
+        last_code_time = getattr(self._bat, "last_customer_code_time", 0)
+        time_since_code = now_ts - last_code_time if last_code_time else float('inf')
+        comms_lost = time_since_code > 10  # 10 seconds without update
+
+        if comms_lost:
+            print(f"[ALARM] Lost BMS communication! No customer code for {time_since_code:.1f} seconds.")
+            self._dbusservice["/Alarms/LostComms"] = 2
+            self._dbusservice["/Connected"] = 0
+            self._dbusservice["/Dc/0/Voltage"] = 0.0
+            self._dbusservice["/Dc/Battery/Voltage"] = 0.0
+            self._dbusservice["/Dc/0/Current"] = 0.0
+            self._dbusservice["/Dc/Battery/Current"] = 0.0
+        else:
+            self._dbusservice["/Alarms/LostComms"] = 0
+            self._dbusservice["/Connected"] = 1
+
+        # Publish customer code for debug/monitoring
+        if hasattr(self._bat, "customer_code"):
+            self._dbusservice["/Info/CustomerCode"] = getattr(self._bat, "customer_code", "")
+
         # === Debug prints for voltage tracing ===
         try:
             pack_voltage_func = self._bat.get_pack_voltage() if hasattr(self._bat, "get_pack_voltage") else None
@@ -243,7 +269,7 @@ class DbusBatteryService:
         self._dbusservice["/Dc/0/Temperature"] = float(temperature)
         self._dbusservice["/Dc/0/Power"] = power
         self._dbusservice["/Soc"] = float(soc)
-        self._dbusservice["/Connected"] = 1 if getattr(self._bat, "updated", -1) != -1 else 0
+        # /Connected is already handled above with comms detection
         self._dbusservice["/System/MinCellVoltage"] = float(min_cell_v)
         self._dbusservice["/System/MaxCellVoltage"] = float(max_cell_v)
         self._dbusservice["/System/MinVoltageCellId"] = str(min_voltage_cell_id)
