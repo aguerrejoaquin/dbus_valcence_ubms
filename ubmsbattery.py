@@ -34,6 +34,10 @@ class UbmsBattery(can.Listener):
         self.currentAndPcbTAlarms = 0
         self.shutdownReason = 0
 
+        self.last_customer_code = None
+        self.last_customer_code_time = 0
+        self.customer_code = ""  # Human-readable code
+        
         self.maxPcbTemperature = 0
         self.maxCellTemperature = 0
         self.minCellTemperature = 0
@@ -125,6 +129,16 @@ class UbmsBattery(can.Listener):
             for idx, m in enumerate(mSoc):
                 if (iStart + idx) < len(self.moduleSoc):
                     self.moduleSoc[iStart + idx] = (m * 100) >> 8
+
+        elif msg.arbitration_id == 0x180:
+            try:
+                # Extract ASCII customer code from bytes 5, 6, 7
+                chars = msg.data[5:8]
+                self.customer_code = ''.join(chr(b) for b in chars if b != 0)
+                self.last_customer_code_time = time.time()
+                self.last_customer_code = self.customer_code
+            except Exception as e:
+                print(f"[WARN] Failed to parse customer code from CAN 0x180: {e}")
 
         # --- Always update pack voltage from cell data ---
         try:
